@@ -111,7 +111,10 @@ pub enum HandshakeOutput {
 #[derive(Clone, Debug)]
 pub struct HandshakePolicy {
     pub link_versions: VersionRange,
+    /// Full protocol catalog exposed only after an existing trust relationship.
     pub protocols: Vec<ProtocolOffer>,
+    /// Minimal non-sensitive catalog available during first pairing.
+    pub pairing_protocols: Vec<ProtocolOffer>,
     pub allow_pairing: bool,
     pub trusted_peers: BTreeSet<PeerId>,
     pub max_protocol_offers: usize,
@@ -179,7 +182,11 @@ impl HandshakeMachine {
                 "handshake cannot be started in the current state",
             ));
         }
-        if self.config.policy.protocols.len() > self.config.policy.max_protocol_offers {
+        let protocols = match auth_path {
+            AuthPath::FirstPairing => &self.config.policy.pairing_protocols,
+            AuthPath::TrustedReconnect => &self.config.policy.protocols,
+        };
+        if protocols.len() > self.config.policy.max_protocol_offers {
             return Err(self.fail(
                 HandshakeErrorKind::LimitExceeded,
                 "too many local protocol offers",
@@ -190,7 +197,7 @@ impl HandshakeMachine {
         Ok(HandshakeFrame::Hello {
             identity: self.config.identity,
             link_versions: self.config.policy.link_versions,
-            protocols: self.config.policy.protocols.clone(),
+            protocols: protocols.clone(),
             requested_auth: auth_path,
         })
     }
@@ -354,7 +361,11 @@ impl HandshakeMachine {
             }
             _ => {}
         }
-        let selected = negotiate_protocols(&self.config.policy.protocols, &protocols);
+        let local_protocols = match requested_auth {
+            AuthPath::FirstPairing => &self.config.policy.pairing_protocols,
+            AuthPath::TrustedReconnect => &self.config.policy.protocols,
+        };
+        let selected = negotiate_protocols(local_protocols, &protocols);
         if selected.is_empty() {
             return Err(self.fail(
                 HandshakeErrorKind::NoSharedProtocol,
@@ -407,8 +418,18 @@ impl HandshakeMachine {
                 "invalid protocol selection",
             ));
         }
+        let local_protocols = match self.auth_path {
+            Some(AuthPath::FirstPairing) => &self.config.policy.pairing_protocols,
+            Some(AuthPath::TrustedReconnect) => &self.config.policy.protocols,
+            None => {
+                return Err(self.fail(
+                    HandshakeErrorKind::UnexpectedMessage,
+                    "authentication path is not negotiated",
+                ));
+            }
+        };
         for selection in selected {
-            let valid = self.config.policy.protocols.iter().any(|offer| {
+            let valid = local_protocols.iter().any(|offer| {
                 offer.namespace == selection.namespace
                     && offer
                         .versions
@@ -492,6 +513,7 @@ mod tests {
                     ProtocolVersion::new(1, 0),
                     ProtocolVersion::new(1, 1),
                 ),
+                pairing_protocols: protocols.clone(),
                 protocols,
                 allow_pairing: true,
                 trusted_peers: BTreeSet::new(),
@@ -556,5 +578,18 @@ mod tests {
         let error = responder.receive(hello).unwrap_err();
         assert_eq!(error.kind, HandshakeErrorKind::PeerNotTrusted);
         assert_eq!(responder.state(), HandshakeState::Failed);
+    }
+
+    #[test]
+    fn first_pairing_does_not_advertise_sensitive_protocols() {
+        let mut config = config(1, vec![offer("mutsuki.sensitive")]);
+        config.policy.pairing_protocols = vec![offer("mutsuki.link.pairing")];
+        let mut initiator = HandshakeMachine::initiator(config);
+        let hello = initiator.start(AuthPath::FirstPairing).unwrap();
+        assert!(matches!(
+            hello,
+            HandshakeFrame::Hello { protocols, .. }
+                if protocols.len() == 1 && protocols[0].namespace == "mutsuki.link.pairing"
+        ));
     }
 }

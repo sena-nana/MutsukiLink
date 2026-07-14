@@ -1,0 +1,30 @@
+[package]
+name = "mutsuki-link-pairing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Headless pairing ceremony and trust stores for MutsukiLink"
+
+[features]
+default = []
+system-keyring = ["dep:keyring"]
+
+[dependencies]
+mutsuki-link-core = { path = "../mutsuki-link-core" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { workspace = true, optional = true, features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { workspace = true, optional = true, features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { workspace = true, optional = true, features = ["linux-native"] }
+
+[lints]
+workspace = true

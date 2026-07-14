@@ -1,5 +1,5 @@
 use crate::{LimitKind, LinkError, ProtocolVersion, SessionId};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub const CONTROL_CHANNEL_ID: ChannelId = ChannelId(0);
 
@@ -87,6 +87,7 @@ pub struct Multiplexer {
     control: VecDeque<Vec<u8>>,
     ready: VecDeque<ChannelId>,
     total_pending: usize,
+    allowed_protocols: Option<BTreeSet<(String, ProtocolVersion)>>,
 }
 
 impl Multiplexer {
@@ -107,7 +108,17 @@ impl Multiplexer {
             control: VecDeque::new(),
             ready: VecDeque::new(),
             total_pending: 0,
+            allowed_protocols: None,
         })
+    }
+
+    pub fn restricted(
+        limits: MultiplexerLimits,
+        protocols: impl IntoIterator<Item = (String, ProtocolVersion)>,
+    ) -> Result<Self, LinkError> {
+        let mut multiplexer = Self::new(limits)?;
+        multiplexer.allowed_protocols = Some(protocols.into_iter().collect());
+        Ok(multiplexer)
     }
 
     pub fn open_channel(&mut self, config: ChannelConfig) -> Result<(), LinkError> {
@@ -120,6 +131,11 @@ impl Multiplexer {
             return Err(LinkError::InvalidInput(
                 "channel namespace and capacity must be non-empty",
             ));
+        }
+        if self.allowed_protocols.as_ref().is_some_and(|allowed| {
+            !allowed.contains(&(config.key.namespace.clone(), config.key.version))
+        }) {
+            return Err(LinkError::NamespaceConflict);
         }
         if self.channels.len() >= self.limits.max_channels {
             return Err(LinkError::LimitExceeded {

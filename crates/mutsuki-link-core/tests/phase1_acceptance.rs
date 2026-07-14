@@ -24,6 +24,7 @@ fn config(value: u8, session: u8, offers: Vec<ProtocolOffer>) -> HandshakeConfig
                 ProtocolVersion::new(1, 0),
                 ProtocolVersion::new(1, 2),
             ),
+            pairing_protocols: offers.clone(),
             protocols: offers,
             allow_pairing: true,
             trusted_peers: BTreeSet::new(),

@@ -20,9 +20,15 @@ Concrete transports are selected independently:
 cargo check -p mutsuki-link --features local
 cargo check -p mutsuki-link --features tcp
 cargo check -p mutsuki-link --features quic
+cargo check -p mutsuki-link --features discovery
+cargo check -p mutsuki-link --features mdns
+cargo check -p mutsuki-link --features pairing
+cargo check -p mutsuki-link --features system-keyring
 ```
 
 See [architecture](docs/architecture.md), [compatibility](docs/compatibility.md), and the planned
 [crate layout](docs/crate-layout.md). The runtime-neutral [core contracts](docs/core-contracts.md)
 document handshake, transport, session, multiplexing, and bounded-memory semantics. See
 [transport deployment](docs/transports.md) for security, fallback, budgets, and platform behavior.
+Headless discovery, pairing, and trust persistence are documented in
+[discovery and pairing](docs/discovery-pairing.md).
