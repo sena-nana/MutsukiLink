@@ -144,6 +144,11 @@ impl Session {
         mux_limits: MultiplexerLimits,
         max_event_subscribers: usize,
     ) -> Result<Self, LinkError> {
+        let allowed_protocols = negotiated
+            .protocols
+            .iter()
+            .map(|protocol| (protocol.namespace.clone(), protocol.version))
+            .collect::<Vec<_>>();
         Ok(Self {
             state: SessionState::Established,
             info: SessionInfo {
@@ -154,7 +159,7 @@ impl Session {
                 close_reason: None,
             },
             events: SessionEventBus::new(max_event_subscribers)?,
-            multiplexer: Multiplexer::new(mux_limits)?,
+            multiplexer: Multiplexer::restricted(mux_limits, allowed_protocols)?,
         })
     }
 
@@ -298,5 +303,25 @@ mod tests {
             Session::established(negotiated(), MultiplexerLimits::default(), 2).unwrap();
         aborted.abort();
         assert_eq!(aborted.info().close_reason, Some(CloseReason::LocalAbort));
+    }
+
+    #[test]
+    fn session_rejects_channels_outside_negotiated_protocols() {
+        let mut session =
+            Session::established(negotiated(), MultiplexerLimits::default(), 1).unwrap();
+        let error = session
+            .multiplexer()
+            .open_channel(crate::ChannelConfig {
+                key: crate::ChannelKey {
+                    namespace: "sensitive.unadvertised".to_owned(),
+                    version: ProtocolVersion::new(1, 0),
+                    id: crate::ChannelId(1),
+                },
+                mode: crate::ChannelMode::Event,
+                priority_hint: 0,
+                capacity: 1,
+            })
+            .unwrap_err();
+        assert_eq!(error, LinkError::NamespaceConflict);
     }
 }

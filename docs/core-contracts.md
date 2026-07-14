@@ -14,6 +14,10 @@ separate first-pairing and trusted-reconnect paths. Identity proofs remain opaqu
 emits a `VerificationRequest`, and an external owner returns `ProofDecision`. Public handshake errors
 contain only a stable category and sanitized message.
 
+First pairing advertises only `HandshakePolicy::pairing_protocols`; the full protocol catalog is used
+only for a trusted reconnect. An unpaired discovery candidate therefore cannot enumerate sensitive
+application namespaces through the handshake.
+
 ## Transport readiness and shutdown
 
 `Connection` is a runtime-neutral, non-blocking reliable message interface. `WouldBlock` is the

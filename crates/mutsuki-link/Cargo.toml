@@ -9,13 +9,19 @@ repository.workspace = true
 
 [features]
 default = []
+discovery = ["dep:mutsuki-link-discovery"]
 local = ["dep:mutsuki-link-local"]
+mdns = ["discovery", "mutsuki-link-discovery/mdns"]
+pairing = ["dep:mutsuki-link-pairing"]
 quic = ["dep:mutsuki-link-quic"]
 tcp = ["dep:mutsuki-link-tcp"]
+system-keyring = ["pairing", "mutsuki-link-pairing/system-keyring"]
 
 [dependencies]
 mutsuki-link-core = { path = "../mutsuki-link-core" }
+mutsuki-link-discovery = { path = "../mutsuki-link-discovery", optional = true }
 mutsuki-link-local = { path = "../mutsuki-link-local", optional = true }
+mutsuki-link-pairing = { path = "../mutsuki-link-pairing", optional = true }
 mutsuki-link-quic = { path = "../mutsuki-link-quic", optional = true }
 mutsuki-link-tcp = { path = "../mutsuki-link-tcp", optional = true }
 

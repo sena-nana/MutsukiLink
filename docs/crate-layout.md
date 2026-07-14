@@ -14,9 +14,9 @@ The crate family is split by dependency weight and runtime ownership:
 | `mutsuki-link` | feature-gated convenience facade | core only by default |
 | `mutsuki-link-transport-testkit` | internal shared Session acceptance suite | test only |
 
-The current workspace contains core, the minimal aggregate facade, and implemented local/TCP/QUIC
-transport crates. Discovery and pairing crates enter with their implementing issue, so their names do
-not become placeholder APIs.
+The current workspace contains core, the minimal aggregate facade, local/TCP/QUIC transports,
+discovery, and pairing/trust-store crates. Future provider crates enter with their implementing issue,
+so their names do not become placeholder APIs.
 
 Concrete features must be additive and independent. For example, selecting local IPC must not pull
 in QUIC/TLS or discovery, and selecting TCP must not initialize mDNS. Applications may depend on

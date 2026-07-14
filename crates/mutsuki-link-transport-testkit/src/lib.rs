@@ -157,6 +157,7 @@ fn config(value: u8, session: u8, protocols: Vec<ProtocolOffer>) -> HandshakeCon
                 ProtocolVersion::new(1, 0),
                 ProtocolVersion::new(1, 2),
             ),
+            pairing_protocols: protocols.clone(),
             protocols,
             allow_pairing: true,
             trusted_peers: BTreeSet::new(),
