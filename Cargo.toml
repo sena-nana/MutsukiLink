@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mutsuki-link",
+    "crates/mutsuki-link-core",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/sena-nana/MutsukiLink"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

@@ -1,0 +1,17 @@
+[package]
+name = "mutsuki-link"
+description = "Minimal feature-gated facade for the MutsukiLink connection runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+mutsuki-link-core = { path = "../mutsuki-link-core" }
+
+[lints]
+workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "mutsuki-link-core"
+description = "Runtime-neutral connection contracts for MutsukiLink"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+
+[lints]
+workspace = true
