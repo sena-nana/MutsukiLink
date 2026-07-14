@@ -220,3 +220,34 @@ fn duplicate_timeout_cancel_and_transcript_tampering_fail_structurally() {
     assert_eq!(rejecting_responder.state(), PairingState::Rejected);
     assert_eq!(rejecting_initiator.state(), PairingState::Rejected);
 }
+
+#[test]
+fn file_trust_store_bounds_records_and_record_fields() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("mutsuki-link-trust-limit-{unique}.json"));
+    let mut store = FileTrustStore::open_with_limit(&path, 1).unwrap();
+    let record = |value: u8, alias: String| TrustRecord {
+        peer_id: PeerId::from_bytes([value; 32]),
+        public_key: vec![value; 32],
+        alias,
+        first_paired_at_unix_ms: 1,
+        permissions: BTreeSet::from([LinkPermission::Connect]),
+        key_state: KeyState::Active,
+        last_pairing_challenge_hash: [value; 32],
+        previous_key_fingerprints: Vec::new(),
+    };
+    store.upsert(record(1, "one".to_owned())).unwrap();
+    assert_eq!(
+        store.upsert(record(2, "two".to_owned())).unwrap_err().kind,
+        TrustStoreErrorKind::LimitExceeded
+    );
+    assert_eq!(
+        store.upsert(record(1, "x".repeat(257))).unwrap_err().kind,
+        TrustStoreErrorKind::LimitExceeded
+    );
+    assert_eq!(store.list().unwrap().len(), 1);
+    std::fs::remove_file(path).unwrap();
+}

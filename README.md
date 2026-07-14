@@ -41,7 +41,16 @@ Protocol owners can register independent versioned namespaces and run the produc
 cargo run -p mutsuki-link --example peer_echo
 cargo run -p mutsuki-link --example manual_server --features local -- my-link-address
 cargo run -p mutsuki-link --example headless_pairing --features pairing
+cargo run -p mutsuki-link --example discovery_pairing --features discovery,pairing
+cargo run -p mutsuki-link --example local_sidecar --features local
+cargo run -p mutsuki-link --example multiplex
+cargo run --release -p mutsuki-link --example release_baseline --features local,tcp,quic
 ```
 
 See [upper protocol integration](docs/protocol-integration.md) for owner-crate boundaries and
 gradual migration guidance.
+
+Before deployment or release, follow [security deployment](docs/security-deployment.md) and the
+[release checklist](docs/release-checklist.md). The checklist includes the enforced
+local/TCP/QUIC performance baseline, mobile/desktop matrix, hardware lifecycle cases, standalone
+packaging, and owner-repository integration gates.

@@ -27,6 +27,33 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: bash scripts/check-boundaries.sh
 
+  mobile-compile:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: aarch64-linux-android
+          - os: macos-latest
+            target: aarch64-apple-ios
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo check -p mutsuki-link-core --target ${{ matrix.target }} --no-default-features
+      - run: cargo check -p mutsuki-link-pairing --target ${{ matrix.target }} --no-default-features
+      - run: cargo check -p mutsuki-link --target ${{ matrix.target }} --no-default-features --features pairing
+
+  release-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo run --release -p mutsuki-link --example release_baseline --features local,tcp,quic
+      - run: cargo package -p mutsuki-link-core --allow-dirty
+      - run: cargo package -p mutsuki-link --allow-dirty --list
+
   msrv:
     runs-on: ubuntu-latest
     steps:

@@ -13,7 +13,7 @@ mdns = ["dep:mdns-sd"]
 
 [dependencies]
 mdns-sd = { workspace = true, optional = true }
-mutsuki-link-core = { path = "../mutsuki-link-core" }
+mutsuki-link-core = { version = "0.1.0", path = "../mutsuki-link-core" }
 
 [lints]
 workspace = true

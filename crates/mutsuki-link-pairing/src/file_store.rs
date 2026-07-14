@@ -1,5 +1,6 @@
 use crate::trust::{
-    KeyState, RecordDto, TrustRecord, TrustStore, TrustStoreError, TrustStoreErrorKind,
+    DEFAULT_MAX_TRUST_RECORDS, KeyState, MAX_TRUST_STORE_FILE_BYTES, RecordDto, TrustRecord,
+    TrustStore, TrustStoreError, TrustStoreErrorKind, validate_record,
 };
 use mutsuki_link_core::PeerId;
 use std::collections::BTreeMap;
@@ -11,20 +12,37 @@ use std::path::{Path, PathBuf};
 pub struct FileTrustStore {
     path: PathBuf,
     records: BTreeMap<PeerId, TrustRecord>,
+    max_records: usize,
 }
 
 impl FileTrustStore {
     /// Opens the explicit file-backed development store. Production callers
     /// should prefer a system credential backend where available.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, TrustStoreError> {
+        Self::open_with_limit(path, DEFAULT_MAX_TRUST_RECORDS)
+    }
+
+    pub fn open_with_limit(
+        path: impl Into<PathBuf>,
+        max_records: usize,
+    ) -> Result<Self, TrustStoreError> {
+        if max_records == 0 {
+            return Err(limit_error());
+        }
         let path = path.into();
         let records = if path.exists() {
+            if fs::metadata(&path).map_err(io_error)?.len() > MAX_TRUST_STORE_FILE_BYTES {
+                return Err(limit_error());
+            }
             let file = OpenOptions::new()
                 .read(true)
                 .open(&path)
                 .map_err(io_error)?;
             let dtos: Vec<RecordDto> =
                 serde_json::from_reader(BufReader::new(file)).map_err(|_| invalid_store())?;
+            if dtos.len() > max_records {
+                return Err(limit_error());
+            }
             dtos.into_iter()
                 .map(|dto| {
                     let record = TrustRecord::try_from(dto)?;
@@ -34,7 +52,11 @@ impl FileTrustStore {
         } else {
             BTreeMap::new()
         };
-        let store = Self { path, records };
+        let store = Self {
+            path,
+            records,
+            max_records,
+        };
         if !store.path.exists() {
             store.persist(&store.records)?;
         }
@@ -93,6 +115,9 @@ impl TrustStore for FileTrustStore {
 
     fn upsert(&mut self, record: TrustRecord) -> Result<(), TrustStoreError> {
         validate_record(&record)?;
+        if !self.records.contains_key(&record.peer_id) && self.records.len() >= self.max_records {
+            return Err(limit_error());
+        }
         let mut records = self.records.clone();
         records.insert(record.peer_id, record);
         self.replace(records)
@@ -137,6 +162,9 @@ impl TrustStore for FileTrustStore {
                 "new peer identity already exists",
             ));
         }
+        if records.len() >= self.max_records {
+            return Err(limit_error());
+        }
         let old = records.get_mut(old_peer_id).ok_or_else(unknown_peer)?;
         if !old.is_active() {
             return Err(TrustStoreError::new(
@@ -156,6 +184,7 @@ impl TrustStore for FileTrustStore {
             last_pairing_challenge_hash: challenge_hash,
             previous_key_fingerprints: fingerprints,
         };
+        validate_record(&replacement)?;
         old.key_state = KeyState::Rotated {
             rotated_at_unix_ms: now_unix_ms,
             new_peer_id,
@@ -166,18 +195,15 @@ impl TrustStore for FileTrustStore {
     }
 }
 
-fn validate_record(record: &TrustRecord) -> Result<(), TrustStoreError> {
-    if record.public_key.is_empty() || record.alias.is_empty() {
-        return Err(TrustStoreError::new(
-            TrustStoreErrorKind::Corrupt,
-            "trust record requires a public key and alias",
-        ));
-    }
-    Ok(())
-}
-
 fn unknown_peer() -> TrustStoreError {
     TrustStoreError::new(TrustStoreErrorKind::UnknownPeer, "peer has no trust record")
+}
+
+fn limit_error() -> TrustStoreError {
+    TrustStoreError::new(
+        TrustStoreErrorKind::LimitExceeded,
+        "trust store limit exceeded",
+    )
 }
 
 fn io_error(_error: std::io::Error) -> TrustStoreError {

@@ -632,6 +632,44 @@ mod tests {
         );
     }
 
+    // GitHub's Windows runner has IPv6 TCP but no bindable IPv6 UDP loopback
+    // for Quinn. Windows still exercises QUIC over IPv4 and TCP over IPv6.
+    #[cfg(not(windows))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn quic_ipv6_loopback_round_trip() {
+        let (server_config, client_config) = crypto_configs();
+        let options = QuicOptions {
+            budget: TransportBudget {
+                idle_timeout: None,
+                ..TransportBudget::default()
+            },
+            ..QuicOptions::default()
+        };
+        let listener = QuicListener::bind(
+            "[::1]:0".parse().unwrap(),
+            EndpointId::from_bytes([2; 16]),
+            server_config,
+            options,
+        )
+        .unwrap();
+        let connector =
+            QuicConnector::new("[::1]:0".parse().unwrap(), client_config, options).unwrap();
+        let address = listener.local_addr().unwrap();
+        let context = ConnectContext::default();
+        let (server, client) = tokio::join!(
+            listener.accept(EndpointId::from_bytes([1; 16])),
+            connector.connect(
+                address,
+                "localhost",
+                EndpointId::from_bytes([1; 16]),
+                EndpointId::from_bytes([2; 16]),
+                &context,
+            )
+        );
+        let (mut server, mut client) = (server.unwrap(), client.unwrap());
+        mutsuki_link_transport_testkit::run_session_transport_suite(&mut client, &mut server).await;
+    }
+
     #[test]
     fn zero_rtt_control_is_rejected() {
         let error = QuicOptions {

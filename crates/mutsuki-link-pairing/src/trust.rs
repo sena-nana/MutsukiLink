@@ -4,6 +4,14 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt;
 
+pub const DEFAULT_MAX_TRUST_RECORDS: usize = 1_024;
+pub(crate) const MAX_TRUST_STORE_FILE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_PUBLIC_KEY_BYTES: usize = 4 * 1024;
+const MAX_ALIAS_BYTES: usize = 256;
+const MAX_PERMISSIONS: usize = 128;
+const MAX_PERMISSION_NAMESPACE_BYTES: usize = 128;
+const MAX_PREVIOUS_KEY_FINGERPRINTS: usize = 64;
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum LinkPermission {
     Connect,
@@ -55,6 +63,7 @@ pub enum TrustStoreErrorKind {
     Rotated,
     IdentityMismatch,
     Conflict,
+    LimitExceeded,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -96,6 +105,29 @@ pub trait TrustStore {
     ) -> Result<TrustRecord, TrustStoreError>;
 }
 
+pub(crate) fn validate_record(record: &TrustRecord) -> Result<(), TrustStoreError> {
+    if record.public_key.is_empty()
+        || record.public_key.len() > MAX_PUBLIC_KEY_BYTES
+        || record.alias.is_empty()
+        || record.alias.len() > MAX_ALIAS_BYTES
+        || record.permissions.len() > MAX_PERMISSIONS
+        || record.previous_key_fingerprints.len() > MAX_PREVIOUS_KEY_FINGERPRINTS
+        || record.permissions.iter().any(|permission| {
+            matches!(
+                permission,
+                LinkPermission::OpenNamespace(namespace)
+                    if namespace.is_empty() || namespace.len() > MAX_PERMISSION_NAMESPACE_BYTES
+            )
+        })
+    {
+        return Err(TrustStoreError::new(
+            TrustStoreErrorKind::LimitExceeded,
+            "trust record exceeds configured limits",
+        ));
+    }
+    Ok(())
+}
+
 pub fn authorize_trusted_reconnect(
     store: &impl TrustStore,
     peer_id: &PeerId,
@@ -104,6 +136,7 @@ pub fn authorize_trusted_reconnect(
     let record = store.get(peer_id)?.ok_or_else(|| {
         TrustStoreError::new(TrustStoreErrorKind::UnknownPeer, "peer has no trust record")
     })?;
+    validate_record(&record)?;
     match record.key_state {
         KeyState::Active => {}
         KeyState::Revoked { .. } => {
@@ -190,7 +223,7 @@ impl TryFrom<RecordDto> for TrustRecord {
                 PermissionDto::Datagram => LinkPermission::Datagram,
             })
             .collect();
-        Ok(Self {
+        let record = Self {
             peer_id,
             public_key: value.public_key,
             alias: value.alias,
@@ -199,7 +232,9 @@ impl TryFrom<RecordDto> for TrustRecord {
             key_state,
             last_pairing_challenge_hash: challenge,
             previous_key_fingerprints,
-        })
+        };
+        validate_record(&record)?;
+        Ok(record)
     }
 }
 

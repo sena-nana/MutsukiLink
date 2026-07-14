@@ -1,6 +1,6 @@
 use crate::trust::{
-    KeyState, RecordDto, TrustRecord, TrustStore, TrustStoreError, TrustStoreErrorKind,
-    decode_peer_id, encode,
+    DEFAULT_MAX_TRUST_RECORDS, KeyState, RecordDto, TrustRecord, TrustStore, TrustStoreError,
+    TrustStoreErrorKind, decode_peer_id, encode, validate_record,
 };
 use keyring::{Entry, Error as KeyringError};
 use mutsuki_link_core::PeerId;
@@ -10,12 +10,20 @@ use std::collections::BTreeSet;
 pub struct SystemKeyringTrustStore {
     service: String,
     known_peers: BTreeSet<PeerId>,
+    max_records: usize,
 }
 
 impl SystemKeyringTrustStore {
     pub fn open(service: impl Into<String>) -> Result<Self, TrustStoreError> {
+        Self::open_with_limit(service, DEFAULT_MAX_TRUST_RECORDS)
+    }
+
+    pub fn open_with_limit(
+        service: impl Into<String>,
+        max_records: usize,
+    ) -> Result<Self, TrustStoreError> {
         let service = service.into();
-        if service.is_empty() {
+        if service.is_empty() || max_records == 0 {
             return Err(TrustStoreError::new(
                 TrustStoreErrorKind::Unavailable,
                 "system keyring service name is empty",
@@ -23,17 +31,27 @@ impl SystemKeyringTrustStore {
         }
         let index = Entry::new(&service, "__mutsuki_link_peer_index").map_err(keyring_error)?;
         let known_peers = match index.get_password() {
-            Ok(encoded) => serde_json::from_str::<Vec<String>>(&encoded)
-                .map_err(|_| corrupt())?
-                .iter()
-                .map(|value| decode_peer_id(value))
-                .collect::<Result<_, _>>()?,
+            Ok(encoded) => {
+                if encoded.len() > max_records.saturating_mul(70).saturating_add(2) {
+                    return Err(limit_error());
+                }
+                let values =
+                    serde_json::from_str::<Vec<String>>(&encoded).map_err(|_| corrupt())?;
+                if values.len() > max_records {
+                    return Err(limit_error());
+                }
+                values
+                    .iter()
+                    .map(|value| decode_peer_id(value))
+                    .collect::<Result<_, _>>()?
+            }
             Err(KeyringError::NoEntry) => BTreeSet::new(),
             Err(error) => return Err(keyring_error(error)),
         };
         Ok(Self {
             service,
             known_peers,
+            max_records,
         })
     }
 
@@ -74,8 +92,10 @@ impl TrustStore for SystemKeyringTrustStore {
     }
 
     fn upsert(&mut self, record: TrustRecord) -> Result<(), TrustStoreError> {
-        if record.public_key.is_empty() || record.alias.is_empty() {
-            return Err(corrupt());
+        validate_record(&record)?;
+        if !self.known_peers.contains(&record.peer_id) && self.known_peers.len() >= self.max_records
+        {
+            return Err(limit_error());
         }
         let encoded = serde_json::to_string(&RecordDto::from(&record)).map_err(|_| corrupt())?;
         self.entry(&record.peer_id)?
@@ -126,6 +146,9 @@ impl TrustStore for SystemKeyringTrustStore {
                 "new peer identity conflicts with trust store",
             ));
         }
+        if self.known_peers.len() >= self.max_records {
+            return Err(limit_error());
+        }
         let mut old = self.get(old_peer_id)?.ok_or_else(unknown_peer)?;
         if !old.is_active() {
             return Err(TrustStoreError::new(
@@ -174,4 +197,11 @@ fn corrupt() -> TrustStoreError {
 
 fn unknown_peer() -> TrustStoreError {
     TrustStoreError::new(TrustStoreErrorKind::UnknownPeer, "peer has no trust record")
+}
+
+fn limit_error() -> TrustStoreError {
+    TrustStoreError::new(
+        TrustStoreErrorKind::LimitExceeded,
+        "system credential trust store limit exceeded",
+    )
 }
