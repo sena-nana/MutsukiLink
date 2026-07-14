@@ -53,6 +53,10 @@ fn remote_security_is_mutual_forward_secure_bound_and_fail_closed() {
     let policy = SecurityPolicy::default();
     let mut evidence = remote_security();
     validate_transport_security(&evidence, &expected, policy).unwrap();
+    let session = Session::established(negotiated(), MultiplexerLimits::default(), 1).unwrap();
+    let authenticated = authenticate_session(session.info(), &evidence, &expected, policy).unwrap();
+    assert_eq!(authenticated.info().peer_id, expected.peer_id);
+    assert_eq!(authenticated.security().transport, TransportKind::Quic);
 
     evidence.identity.status = IdentityStatus::Revoked;
     assert_eq!(

@@ -21,6 +21,7 @@ mod handshake;
 mod identity;
 mod liveness;
 mod mux;
+mod protocol;
 mod reconnect;
 mod resume;
 mod security;
@@ -47,6 +48,11 @@ pub use mux::{
     CONTROL_CHANNEL_ID, ChannelConfig, ChannelId, ChannelKey, ChannelMode, Envelope, EnvelopeFlags,
     Multiplexer, MultiplexerLimits, OutboundFrame, QueueAdmission,
 };
+pub use protocol::{
+    ActiveProtocolSet, ChannelOpenRequest, FrozenProtocolRegistry, ProtocolChannel,
+    ProtocolDescriptor, ProtocolId, ProtocolRegistry, ProtocolRegistryError,
+    ProtocolRegistryErrorKind, ProtocolRegistryLimits, ValidatedChannel,
+};
 pub use reconnect::{
     ExponentialBackoff, ReconnectAction, ReconnectController, ReconnectFailure, ReconnectPolicy,
     ReconnectStopReason, RetryLimit,
@@ -56,9 +62,10 @@ pub use resume::{
     ResumeErrorKind, ResumeLimits, ResumeOffer, ResumeTokenVerifier, SessionContinuity,
 };
 pub use security::{
-    ForwardSecrecyPolicy, IdentityEvidence, IdentityStatus, LocalPeerCredentialPolicy,
-    RemoteSecurityPolicy, SecurityError, SecurityErrorKind, SecurityExpectation, SecurityPolicy,
-    SessionKeyBinding, TransportSecurityEvidence, validate_transport_security,
+    AuthenticatedSession, ForwardSecrecyPolicy, IdentityEvidence, IdentityStatus,
+    LocalPeerCredentialPolicy, RemoteSecurityPolicy, SecurityError, SecurityErrorKind,
+    SecurityExpectation, SecurityPolicy, SessionKeyBinding, TransportSecurityEvidence,
+    authenticate_session, validate_transport_security,
 };
 pub use selection::{
     AttemptFailure, FallbackPlan, FallbackPolicy, SecurityLevel, SelectionError, TransportAttempt,
