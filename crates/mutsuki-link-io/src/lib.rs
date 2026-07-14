@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 #[derive(Clone, Debug, Default)]
@@ -49,10 +49,9 @@ impl Drop for ConnectionPermit {
 pub struct FramedConnection {
     metadata: ConnectionMetadata,
     budget: TransportBudget,
-    control_tx: mpsc::Sender<Vec<u8>>,
-    data_tx: mpsc::Sender<Vec<u8>>,
+    control_tx: Option<mpsc::Sender<Vec<u8>>>,
+    data_tx: Option<mpsc::Sender<Vec<u8>>>,
     receive_rx: mpsc::Receiver<Vec<u8>>,
-    close_write_tx: watch::Sender<bool>,
     writer: JoinHandle<()>,
     reader: JoinHandle<()>,
     terminal_error: Arc<Mutex<Option<TransportError>>>,
@@ -95,7 +94,6 @@ where
     let (control_tx, control_rx) = mpsc::channel(budget.control_queue_capacity);
     let (data_tx, data_rx) = mpsc::channel(budget.data_queue_capacity);
     let (receive_tx, receive_rx) = mpsc::channel(budget.receive_queue_capacity);
-    let (close_write_tx, close_write_rx) = watch::channel(false);
     let terminal_error = Arc::new(Mutex::new(None));
     let writer_error = Arc::clone(&terminal_error);
     let reader_error = Arc::clone(&terminal_error);
@@ -104,7 +102,6 @@ where
         writer,
         control_rx,
         data_rx,
-        close_write_rx,
         budget,
         writer_error,
     ));
@@ -113,10 +110,9 @@ where
     Ok(FramedConnection {
         metadata,
         budget,
-        control_tx,
-        data_tx,
+        control_tx: Some(control_tx),
+        data_tx: Some(data_tx),
         receive_rx,
-        close_write_tx,
         writer: writer_task,
         reader: reader_task,
         terminal_error,
@@ -173,7 +169,8 @@ impl Connection for FramedConnection {
                 "transport write side is closed",
             ));
         }
-        Self::enqueue(&self.data_tx, message, self.budget.max_frame_bytes)
+        let sender = self.data_tx.as_ref().ok_or_else(write_closed)?;
+        Self::enqueue(sender, message, self.budget.max_frame_bytes)
     }
 
     fn try_send_control(&mut self, message: &[u8]) -> Result<(), TransportError> {
@@ -183,7 +180,8 @@ impl Connection for FramedConnection {
                 "transport write side is closed",
             ));
         }
-        Self::enqueue(&self.control_tx, message, self.budget.max_frame_bytes)
+        let sender = self.control_tx.as_ref().ok_or_else(write_closed)?;
+        Self::enqueue(sender, message, self.budget.max_frame_bytes)
     }
 
     fn try_receive(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
@@ -219,12 +217,12 @@ impl Connection for FramedConnection {
             return Ok(());
         }
         self.write_closed = true;
-        self.close_write_tx.send(true).map_err(|_| {
-            self.terminal_or(TransportError::new(
-                TransportErrorKind::Closed,
-                "transport write side is closed",
-            ))
-        })
+        // Dropping the final senders closes both bounded queues. The writer
+        // continues receiving until every accepted frame is flushed, then
+        // performs the transport half-close.
+        self.control_tx.take();
+        self.data_tx.take();
+        Ok(())
     }
 
     fn close_read(&mut self) -> Result<(), TransportError> {
@@ -251,38 +249,39 @@ async fn write_loop<W>(
     mut writer: W,
     mut control_rx: mpsc::Receiver<Vec<u8>>,
     mut data_rx: mpsc::Receiver<Vec<u8>>,
-    mut close_rx: watch::Receiver<bool>,
     budget: TransportBudget,
     terminal_error: Arc<Mutex<Option<TransportError>>>,
 ) where
     W: AsyncWrite + Unpin,
 {
+    let mut control_open = true;
+    let mut data_open = true;
     loop {
-        let next = tokio::select! {
-            biased;
-            changed = close_rx.changed() => {
-                if changed.is_err() || *close_rx.borrow() {
-                    while let Ok(message) = control_rx.try_recv() {
-                        if write_frame(&mut writer, &message, budget.control_bytes_per_second).await.is_err() {
-                            break;
-                        }
-                    }
-                    while let Ok(message) = data_rx.try_recv() {
-                        if write_frame(&mut writer, &message, budget.data_bytes_per_second).await.is_err() {
-                            break;
-                        }
-                    }
-                    let _ = writer.shutdown().await;
-                    return;
-                }
-                continue;
-            }
-            message = control_rx.recv() => message.map(|message| (message, true)),
-            message = data_rx.recv() => message.map(|message| (message, false)),
-        };
-        let Some((message, control)) = next else {
+        if !control_open && !data_open {
             let _ = writer.shutdown().await;
             return;
+        }
+        let next = tokio::select! {
+            biased;
+            message = control_rx.recv(), if control_open => {
+                if let Some(message) = message {
+                    Some((message, true))
+                } else {
+                    control_open = false;
+                    None
+                }
+            }
+            message = data_rx.recv(), if data_open => {
+                if let Some(message) = message {
+                    Some((message, false))
+                } else {
+                    data_open = false;
+                    None
+                }
+            }
+        };
+        let Some((message, control)) = next else {
+            continue;
         };
         let rate = if control {
             budget.control_bytes_per_second
@@ -381,6 +380,10 @@ fn io_error(error: io::Error) -> TransportError {
         _ => TransportErrorKind::Other,
     };
     TransportError::new(kind, "transport I/O failed")
+}
+
+fn write_closed() -> TransportError {
+    TransportError::new(TransportErrorKind::Closed, "transport write side is closed")
 }
 
 fn set_terminal_error(target: &Mutex<Option<TransportError>>, error: TransportError) {
@@ -482,6 +485,26 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(500));
         assert_eq!(wait_for_message(&mut receiver).await, vec![1; 100]);
         assert!(started.elapsed() >= Duration::from_millis(900));
+    }
+
+    #[tokio::test]
+    async fn graceful_half_close_flushes_every_accepted_frame() {
+        let (left, right) = duplex(1024);
+        let budget = TransportBudget {
+            idle_timeout: None,
+            ..TransportBudget::default()
+        };
+        let mut sender = spawn_framed_connection(left, metadata(true), budget, None).unwrap();
+        let mut receiver = spawn_framed_connection(right, metadata(false), budget, None).unwrap();
+        sender.try_send(b"data").unwrap();
+        sender.try_send_control(b"control").unwrap();
+        sender.close_write().unwrap();
+        assert_eq!(wait_for_message(&mut receiver).await, b"control");
+        assert_eq!(wait_for_message(&mut receiver).await, b"data");
+        assert_eq!(
+            sender.try_send(b"late").unwrap_err().kind,
+            TransportErrorKind::Closed
+        );
     }
 
     #[test]
