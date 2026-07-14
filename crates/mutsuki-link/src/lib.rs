@@ -5,6 +5,4 @@
 
 #![forbid(unsafe_code)]
 
-pub use mutsuki_link_core::{
-    LINK_PROTOCOL_VERSION, MIN_COMPATIBLE_LINK_PROTOCOL_VERSION, protocol_version_is_compatible,
-};
+pub use mutsuki_link_core::*;
