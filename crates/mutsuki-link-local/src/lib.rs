@@ -174,9 +174,18 @@ fn make_connection(
         .peer_creds()
         .ok()
         .map(|credentials| LocalPeerCredentials {
-            process_id: credentials
-                .pid()
-                .and_then(|value| u32::try_from(value).ok()),
+            process_id: {
+                #[cfg(windows)]
+                {
+                    credentials.pid()
+                }
+                #[cfg(unix)]
+                {
+                    credentials
+                        .pid()
+                        .and_then(|value| u32::try_from(value).ok())
+                }
+            },
             #[cfg(unix)]
             effective_user_id: credentials.euid(),
             #[cfg(unix)]
