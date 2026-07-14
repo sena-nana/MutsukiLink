@@ -9,9 +9,15 @@ repository.workspace = true
 
 [features]
 default = []
+local = ["dep:mutsuki-link-local"]
+quic = ["dep:mutsuki-link-quic"]
+tcp = ["dep:mutsuki-link-tcp"]
 
 [dependencies]
 mutsuki-link-core = { path = "../mutsuki-link-core" }
+mutsuki-link-local = { path = "../mutsuki-link-local", optional = true }
+mutsuki-link-quic = { path = "../mutsuki-link-quic", optional = true }
+mutsuki-link-tcp = { path = "../mutsuki-link-tcp", optional = true }
 
 [lints]
 workspace = true

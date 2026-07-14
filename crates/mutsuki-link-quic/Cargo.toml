@@ -1,0 +1,23 @@
+[package]
+name = "mutsuki-link-quic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Opt-in authenticated encrypted QUIC transport for MutsukiLink"
+
+[dependencies]
+bytes.workspace = true
+mutsuki-link-core = { path = "../mutsuki-link-core" }
+mutsuki-link-io = { path = "../mutsuki-link-io" }
+quinn.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+mutsuki-link-transport-testkit = { path = "../mutsuki-link-transport-testkit" }
+rcgen.workspace = true
+rustls.workspace = true
+
+[lints]
+workspace = true

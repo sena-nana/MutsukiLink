@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransportErrorKind {
@@ -95,12 +95,71 @@ impl OperationContext {
 
 pub type ConnectContext = OperationContext;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransportBudget {
+    pub max_connections: usize,
+    pub max_concurrent_streams: usize,
+    pub control_queue_capacity: usize,
+    pub data_queue_capacity: usize,
+    pub receive_queue_capacity: usize,
+    pub max_frame_bytes: usize,
+    /// `None` means unlimited. Control and data use separate token budgets.
+    pub control_bytes_per_second: Option<u64>,
+    pub data_bytes_per_second: Option<u64>,
+    pub receive_bytes_per_second: Option<u64>,
+    pub idle_timeout: Option<Duration>,
+}
+
+impl Default for TransportBudget {
+    fn default() -> Self {
+        Self {
+            max_connections: 64,
+            max_concurrent_streams: 64,
+            control_queue_capacity: 32,
+            data_queue_capacity: 128,
+            receive_queue_capacity: 128,
+            max_frame_bytes: 1024 * 1024,
+            control_bytes_per_second: None,
+            data_bytes_per_second: None,
+            receive_bytes_per_second: None,
+            idle_timeout: Some(Duration::from_secs(60)),
+        }
+    }
+}
+
+impl TransportBudget {
+    pub fn validate(self) -> Result<Self, TransportError> {
+        if self.max_connections == 0
+            || self.max_concurrent_streams == 0
+            || self.control_queue_capacity == 0
+            || self.data_queue_capacity == 0
+            || self.receive_queue_capacity == 0
+            || self.max_frame_bytes == 0
+            || self.control_bytes_per_second == Some(0)
+            || self.data_bytes_per_second == Some(0)
+            || self.receive_bytes_per_second == Some(0)
+        {
+            return Err(TransportError::new(
+                TransportErrorKind::Other,
+                "transport budget values must be positive",
+            ));
+        }
+        Ok(self)
+    }
+}
+
 /// Non-blocking, runtime-neutral reliable message connection. `WouldBlock`
 /// explicitly signals backpressure; adapters decide how readiness is awaited.
 pub trait Connection {
     fn metadata(&self) -> &ConnectionMetadata;
     fn try_send(&mut self, message: &[u8]) -> Result<(), TransportError>;
     fn try_receive(&mut self) -> Result<Option<Vec<u8>>, TransportError>;
+
+    /// Queues a control-plane message using reserved transport capacity when
+    /// the implementation supports independent queues.
+    fn try_send_control(&mut self, message: &[u8]) -> Result<(), TransportError> {
+        self.try_send(message)
+    }
 
     fn try_send_with_context(
         &mut self,
