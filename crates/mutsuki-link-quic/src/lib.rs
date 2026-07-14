@@ -82,8 +82,8 @@ impl QuicConnection {
         let millis = self.connection.rtt().as_millis();
         ConnectionQuality {
             round_trip_millis: Some(u32::try_from(millis).unwrap_or(u32::MAX)),
-            loss_per_million: None,
-            consecutive_failures: 0,
+            transport: Some(mutsuki_link_core::TransportKind::Quic),
+            ..ConnectionQuality::default()
         }
     }
 
