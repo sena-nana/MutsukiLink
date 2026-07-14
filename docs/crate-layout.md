@@ -4,7 +4,7 @@ The crate family is split by dependency weight and runtime ownership:
 
 | crate | ownership | default/runtime dependencies |
 |---|---|---|
-| `mutsuki-link-core` | identities, protocol negotiation, session/channel contracts and pure state machines | none |
+| `mutsuki-link-core` | identities, protocol negotiation, authentication evidence, reconnect/resume, liveness, quality, session/channel contracts and pure state machines | none |
 | `mutsuki-link-io` | internal bounded Tokio framing bridge shared by concrete transports | Tokio, never exposed by the facade |
 | `mutsuki-link-local` | optional platform local IPC | platform-specific, opt-in |
 | `mutsuki-link-tcp` | optional reliable TCP transport | async/runtime adapter, opt-in |

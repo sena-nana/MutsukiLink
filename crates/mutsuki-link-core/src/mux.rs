@@ -52,6 +52,12 @@ pub enum OutboundFrame {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueueAdmission {
+    Enqueued,
+    DroppedDiscardable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MultiplexerLimits {
     pub max_frame_bytes: usize,
     pub max_nesting_depth: u16,
@@ -207,6 +213,39 @@ impl Multiplexer {
         state.queue.push_back(envelope);
         self.total_pending += 1;
         Ok(())
+    }
+
+    /// Enqueues a discardable event/telemetry frame. Under queue pressure it is
+    /// dropped instead of blocking control or reliable application traffic.
+    pub fn enqueue_discardable(&mut self, envelope: Envelope) -> Result<QueueAdmission, LinkError> {
+        self.validate_payload(&envelope.payload, envelope.nesting_depth)?;
+        let channel_id = envelope.channel.id;
+        let state = self
+            .channels
+            .get_mut(&channel_id)
+            .ok_or(LinkError::UnknownChannel(channel_id.0))?;
+        if state.config.key != envelope.channel {
+            return Err(LinkError::NamespaceConflict);
+        }
+        if state.config.mode != ChannelMode::Event {
+            return Err(LinkError::InvalidInput(
+                "only event channels may discard frames under pressure",
+            ));
+        }
+        if state.cancelled {
+            return Err(LinkError::ChannelCancelled(channel_id.0));
+        }
+        if self.total_pending >= self.limits.max_total_pending_frames
+            || state.queue.len() >= state.config.capacity
+        {
+            return Ok(QueueAdmission::DroppedDiscardable);
+        }
+        if state.queue.is_empty() {
+            self.ready.push_back(channel_id);
+        }
+        state.queue.push_back(envelope);
+        self.total_pending += 1;
+        Ok(QueueAdmission::Enqueued)
     }
 
     pub fn next_outbound(&mut self) -> Option<OutboundFrame> {

@@ -9,7 +9,7 @@ if rg -n 'MutsukiCore|MutsukiServiceHost|MutsukiDistributedHost|mutsuki-runtime|
   exit 1
 fi
 
-if rg -n --glob '*.rs' 'GlobalTaskId|AssignmentLease|NodeCapabilities|DistributedContext' crates; then
+if rg -n --glob '*.rs' 'GlobalTaskId|AssignmentLease|NodeCapabilities|DistributedContext|LeaderTerm|TaskLease|LiliaCode|TrustLevel' crates; then
   echo "forbidden upper-layer execution type in MutsukiLink source" >&2
   exit 1
 fi

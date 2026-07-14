@@ -1,6 +1,6 @@
 use crate::{
-    LimitKind, LinkError, Multiplexer, MultiplexerLimits, NegotiatedSession, PeerId,
-    ProtocolSelection, SessionId,
+    ConnectionQuality, LimitKind, LinkError, Multiplexer, MultiplexerLimits, NegotiatedSession,
+    PeerId, ProtocolSelection, SessionContinuity, SessionId,
 };
 use std::collections::{BTreeMap, VecDeque};
 
@@ -25,18 +25,12 @@ pub enum CloseReason {
     TransportFailure,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ConnectionQuality {
-    pub round_trip_millis: Option<u32>,
-    pub loss_per_million: Option<u32>,
-    pub consecutive_failures: u16,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionInfo {
     pub session_id: SessionId,
     pub peer_id: PeerId,
     pub protocols: Vec<ProtocolSelection>,
+    pub continuity: SessionContinuity,
     pub quality: ConnectionQuality,
     pub close_reason: Option<CloseReason>,
 }
@@ -44,6 +38,7 @@ pub struct SessionInfo {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SessionEvent {
     StateChanged(SessionState),
+    ContinuityChanged(SessionContinuity),
     QualityChanged(ConnectionQuality),
     Closed(CloseReason),
     EventsDropped(u64),
@@ -155,6 +150,7 @@ impl Session {
                 session_id: negotiated.session_id,
                 peer_id: negotiated.remote.peer_id,
                 protocols: negotiated.protocols,
+                continuity: SessionContinuity::default(),
                 quality: ConnectionQuality::default(),
                 close_reason: None,
             },
@@ -183,6 +179,14 @@ impl Session {
         self.ensure_active()?;
         self.info.quality = quality;
         self.events.publish(SessionEvent::QualityChanged(quality));
+        Ok(())
+    }
+
+    pub fn report_continuity(&mut self, continuity: SessionContinuity) -> Result<(), LinkError> {
+        self.ensure_active()?;
+        self.info.continuity = continuity;
+        self.events
+            .publish(SessionEvent::ContinuityChanged(continuity));
         Ok(())
     }
 

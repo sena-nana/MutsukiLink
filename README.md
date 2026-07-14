@@ -31,4 +31,6 @@ See [architecture](docs/architecture.md), [compatibility](docs/compatibility.md)
 document handshake, transport, session, multiplexing, and bounded-memory semantics. See
 [transport deployment](docs/transports.md) for security, fallback, budgets, and platform behavior.
 Headless discovery, pairing, and trust persistence are documented in
-[discovery and pairing](docs/discovery-pairing.md).
+[discovery and pairing](docs/discovery-pairing.md). Authentication evidence, bounded reconnect,
+connection-only session resume, heartbeat, and quality management are documented in
+[connection resilience](docs/connection-resilience.md).

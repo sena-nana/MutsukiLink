@@ -15,14 +15,20 @@
     clippy::too_many_lines
 )]
 
+mod budget;
 mod error;
 mod handshake;
 mod identity;
+mod liveness;
 mod mux;
+mod reconnect;
+mod resume;
+mod security;
 mod selection;
 mod session;
 mod transport;
 
+pub use budget::{ConnectionBudget, MaintenanceBudget, MaintenanceMode};
 pub use error::{HandshakeError, HandshakeErrorKind, LimitKind, LinkError};
 pub use handshake::{
     AuthPath, HandshakeConfig, HandshakeFrame, HandshakeMachine, HandshakeOutput, HandshakePolicy,
@@ -32,17 +38,35 @@ pub use handshake::{
 pub use identity::{
     ConnectionId, EndpointId, Identity, PeerId, ProtocolVersion, SessionId, VersionRange,
 };
+pub use liveness::{
+    ConnectionActivityProfile, ConnectionQuality, HeartbeatAction, HeartbeatController,
+    HeartbeatPolicy, LivenessState, QualityAccumulator, QualityChangeDetector,
+    QualityChangeThreshold, QualityObservation,
+};
 pub use mux::{
     CONTROL_CHANNEL_ID, ChannelConfig, ChannelId, ChannelKey, ChannelMode, Envelope, EnvelopeFlags,
-    Multiplexer, MultiplexerLimits, OutboundFrame,
+    Multiplexer, MultiplexerLimits, OutboundFrame, QueueAdmission,
+};
+pub use reconnect::{
+    ExponentialBackoff, ReconnectAction, ReconnectController, ReconnectFailure, ReconnectPolicy,
+    ReconnectStopReason, RetryLimit,
+};
+pub use resume::{
+    ChannelCursor, NewSessionReason, ReplayPlan, RequestReplay, ResumeCoordinator, ResumeError,
+    ResumeErrorKind, ResumeLimits, ResumeOffer, ResumeTokenVerifier, SessionContinuity,
+};
+pub use security::{
+    ForwardSecrecyPolicy, IdentityEvidence, IdentityStatus, LocalPeerCredentialPolicy,
+    RemoteSecurityPolicy, SecurityError, SecurityErrorKind, SecurityExpectation, SecurityPolicy,
+    SessionKeyBinding, TransportSecurityEvidence, validate_transport_security,
 };
 pub use selection::{
     AttemptFailure, FallbackPlan, FallbackPolicy, SecurityLevel, SelectionError, TransportAttempt,
     TransportCandidate, TransportKind, TransportSelection,
 };
 pub use session::{
-    CloseReason, ConnectionQuality, EventSubscriberId, Session, SessionEvent, SessionEventBus,
-    SessionInfo, SessionState,
+    CloseReason, EventSubscriberId, Session, SessionEvent, SessionEventBus, SessionInfo,
+    SessionState,
 };
 pub use transport::{
     CancellationToken, ConnectContext, Connection, ConnectionMetadata, EndpointAddress, Listener,
