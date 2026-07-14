@@ -1,4 +1,4 @@
-use crate::{EndpointAddress, PeerId, ProtocolVersion, SecurityLevel, TransportKind};
+use crate::{EndpointAddress, PeerId, ProtocolVersion, SecurityLevel, SessionInfo, TransportKind};
 use core::fmt;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -127,6 +127,37 @@ impl fmt::Display for SecurityError {
 }
 
 impl std::error::Error for SecurityError {}
+
+/// A type-level view available only after transport and long-term identity
+/// evidence has passed the configured security policy.
+#[derive(Clone, Copy, Debug)]
+pub struct AuthenticatedSession<'a> {
+    session: &'a SessionInfo,
+    evidence: &'a TransportSecurityEvidence,
+}
+
+impl<'a> AuthenticatedSession<'a> {
+    pub fn info(&self) -> &'a SessionInfo {
+        self.session
+    }
+
+    pub fn security(&self) -> &'a TransportSecurityEvidence {
+        self.evidence
+    }
+}
+
+pub fn authenticate_session<'a>(
+    session: &'a SessionInfo,
+    evidence: &'a TransportSecurityEvidence,
+    expected: &SecurityExpectation,
+    policy: SecurityPolicy,
+) -> Result<AuthenticatedSession<'a>, SecurityError> {
+    if session.peer_id != expected.peer_id {
+        return Err(error(SecurityErrorKind::PeerMismatch));
+    }
+    validate_transport_security(evidence, expected, policy)?;
+    Ok(AuthenticatedSession { session, evidence })
+}
 
 /// Validates backend evidence without depending on a particular TLS, QUIC, keychain,
 /// or local-credential implementation. The backend must create the evidence from

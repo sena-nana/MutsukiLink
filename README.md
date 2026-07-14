@@ -34,3 +34,14 @@ Headless discovery, pairing, and trust persistence are documented in
 [discovery and pairing](docs/discovery-pairing.md). Authentication evidence, bounded reconnect,
 connection-only session resume, heartbeat, and quality management are documented in
 [connection resilience](docs/connection-resilience.md).
+
+Protocol owners can register independent versioned namespaces and run the product-neutral examples:
+
+```bash
+cargo run -p mutsuki-link --example peer_echo
+cargo run -p mutsuki-link --example manual_server --features local -- my-link-address
+cargo run -p mutsuki-link --example headless_pairing --features pairing
+```
+
+See [upper protocol integration](docs/protocol-integration.md) for owner-crate boundaries and
+gradual migration guidance.

@@ -42,3 +42,12 @@ if rg -n 'tauri|slint|egui|clap|dialog' crates/mutsuki-link-pairing/Cargo.toml c
   echo "pairing core unexpectedly depends on a UI or CLI layer" >&2
   exit 1
 fi
+
+if rg -n 'LiliaCode|LiliaGithub|MutsukiDistributedHost' --glob 'Cargo.toml' .; then
+  echo "Link unexpectedly depends on an upper product repository" >&2
+  exit 1
+fi
+
+cargo check -p mutsuki-link --example peer_echo
+cargo check -p mutsuki-link --example manual_server --features local
+cargo check -p mutsuki-link --example headless_pairing --features pairing

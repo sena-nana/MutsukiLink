@@ -58,6 +58,8 @@ session keys, the current long-term identity key, and bindings to the handshake 
 version, and both endpoints. Plain TCP is accepted only when both the policy and the evidence mark an
 explicit development connection; the default is fail-closed. Local IPC can additionally require a
 verified platform peer credential without coupling Core to a platform API.
+`authenticate_session` returns an `AuthenticatedSession` view only after those checks, giving owner
+adapters a type-level boundary instead of a self-asserted boolean.
 
 `ReconnectController` implements disabled, immediate, exponential-backoff, and
 application-controlled policies with bounded attempts, total deadline, injected jitter, pause, and
@@ -83,3 +85,15 @@ threshold-crossing summaries, which can be published through the existing bounde
 `ConnectionBudget` exposes hard connection-level memory, bandwidth, channel, send-queue, resume,
 pending-replay, and maintenance limits. These values are observations and limits only; Core never
 migrates work or changes application capabilities.
+
+## Upper protocol registry
+
+`ProtocolRegistry` accepts bounded `ProtocolDescriptor` values before startup and then consumes
+itself into `FrozenProtocolRegistry`. Each descriptor declares a namespaced id, version range, channel
+name/mode, priority, frame/stream limit, in-flight bound, and whether an event may be discarded under
+pressure. Link stores payloads as opaque bytes and never registers product message schemas.
+
+Negotiation intersects each namespace independently. An incompatible product protocol is omitted
+without disabling another shared protocol. `ActiveProtocolSet` can create channel configurations only
+for negotiated ids, versions, and declared channel names; `Multiplexer::restricted` independently
+rejects an open for any namespace/version absent from the handshake selection.

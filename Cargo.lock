@@ -368,6 +368,7 @@ dependencies = [
  "mutsuki-link-pairing",
  "mutsuki-link-quic",
  "mutsuki-link-tcp",
+ "tokio",
 ]
 
 [[package]]
