@@ -396,7 +396,7 @@ use std::future::Future;
 mod tests {
     use super::*;
     use mutsuki_link_core::EndpointId;
-    use tokio::io::duplex;
+    use tokio::io::{AsyncWriteExt, duplex};
 
     fn metadata(left: bool) -> ConnectionMetadata {
         ConnectionMetadata {
@@ -436,5 +436,90 @@ mod tests {
         }
         assert_eq!(messages[0], b"ping");
         assert_eq!(messages[1], b"data");
+    }
+
+    #[tokio::test]
+    async fn oversized_and_truncated_frames_fail_without_unbounded_allocation() {
+        let budget = TransportBudget {
+            max_frame_bytes: 16,
+            idle_timeout: None,
+            ..TransportBudget::default()
+        };
+        let (mut attacker, victim) = duplex(128);
+        let mut receiver = spawn_framed_connection(victim, metadata(false), budget, None).unwrap();
+        attacker.write_u32(17).await.unwrap();
+        attacker.flush().await.unwrap();
+        assert_eq!(
+            wait_for_error(&mut receiver).await,
+            TransportErrorKind::MessageTooLarge
+        );
+
+        let (mut attacker, victim) = duplex(128);
+        let mut receiver = spawn_framed_connection(victim, metadata(false), budget, None).unwrap();
+        attacker.write_u32(8).await.unwrap();
+        attacker.write_all(b"cut").await.unwrap();
+        attacker.shutdown().await.unwrap();
+        assert_eq!(
+            wait_for_error(&mut receiver).await,
+            TransportErrorKind::Closed
+        );
+    }
+
+    #[tokio::test]
+    async fn bandwidth_fault_does_not_delay_already_queued_control() {
+        let (left, right) = duplex(1024);
+        let budget = TransportBudget {
+            data_bytes_per_second: Some(100),
+            idle_timeout: None,
+            ..TransportBudget::default()
+        };
+        let mut sender = spawn_framed_connection(left, metadata(true), budget, None).unwrap();
+        let mut receiver = spawn_framed_connection(right, metadata(false), budget, None).unwrap();
+        sender.try_send(&[1; 100]).unwrap();
+        sender.try_send_control(b"cancel").unwrap();
+        let started = tokio::time::Instant::now();
+        assert_eq!(wait_for_message(&mut receiver).await, b"cancel");
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert_eq!(wait_for_message(&mut receiver).await, vec![1; 100]);
+        assert!(started.elapsed() >= Duration::from_millis(900));
+    }
+
+    #[test]
+    fn connection_permits_return_after_repeated_disconnects() {
+        let counter = ConnectionCounter::default();
+        for _ in 0..10_000 {
+            let permit = counter.try_acquire(1).unwrap();
+            assert_eq!(counter.active(), 1);
+            drop(permit);
+        }
+        assert_eq!(counter.active(), 0);
+    }
+
+    async fn wait_for_message(connection: &mut FramedConnection) -> Vec<u8> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match connection.try_receive() {
+                Ok(Some(message)) => return message,
+                Err(error) if error.kind == TransportErrorKind::WouldBlock => {
+                    assert!(tokio::time::Instant::now() < deadline);
+                    tokio::task::yield_now().await;
+                }
+                result => panic!("unexpected receive result: {result:?}"),
+            }
+        }
+    }
+
+    async fn wait_for_error(connection: &mut FramedConnection) -> TransportErrorKind {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match connection.try_receive() {
+                Err(error) if error.kind != TransportErrorKind::WouldBlock => return error.kind,
+                Err(_) => {
+                    assert!(tokio::time::Instant::now() < deadline);
+                    tokio::task::yield_now().await;
+                }
+                result => panic!("unexpected receive result: {result:?}"),
+            }
+        }
     }
 }

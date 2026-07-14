@@ -18,13 +18,18 @@ tcp = ["dep:mutsuki-link-tcp"]
 system-keyring = ["pairing", "mutsuki-link-pairing/system-keyring"]
 
 [dependencies]
-mutsuki-link-core = { path = "../mutsuki-link-core" }
-mutsuki-link-discovery = { path = "../mutsuki-link-discovery", optional = true }
-mutsuki-link-local = { path = "../mutsuki-link-local", optional = true }
-mutsuki-link-pairing = { path = "../mutsuki-link-pairing", optional = true }
-mutsuki-link-quic = { path = "../mutsuki-link-quic", optional = true }
-mutsuki-link-tcp = { path = "../mutsuki-link-tcp", optional = true }
+mutsuki-link-core = { version = "0.1.0", path = "../mutsuki-link-core" }
+mutsuki-link-discovery = { version = "0.1.0", path = "../mutsuki-link-discovery", optional = true }
+mutsuki-link-local = { version = "0.1.0", path = "../mutsuki-link-local", optional = true }
+mutsuki-link-pairing = { version = "0.1.0", path = "../mutsuki-link-pairing", optional = true }
+mutsuki-link-quic = { version = "0.1.0", path = "../mutsuki-link-quic", optional = true }
+mutsuki-link-tcp = { version = "0.1.0", path = "../mutsuki-link-tcp", optional = true }
 tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+quinn.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
 
 [[example]]
 name = "manual_server"
@@ -33,6 +38,21 @@ required-features = ["local"]
 [[example]]
 name = "headless_pairing"
 required-features = ["pairing"]
+
+[[example]]
+name = "discovery_pairing"
+required-features = ["discovery", "pairing"]
+
+[[example]]
+name = "local_sidecar"
+required-features = ["local"]
+
+[[example]]
+name = "multiplex"
+
+[[example]]
+name = "release_baseline"
+required-features = ["local", "tcp", "quic"]
 
 [lints]
 workspace = true

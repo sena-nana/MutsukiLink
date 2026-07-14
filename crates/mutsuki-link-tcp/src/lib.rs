@@ -287,4 +287,36 @@ mod tests {
             }
         }
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tcp_ipv6_loopback_round_trip() {
+        let config = TcpConfig {
+            budget: TransportBudget {
+                idle_timeout: None,
+                ..TransportBudget::default()
+            },
+            ..TcpConfig::default()
+        };
+        let listener = TcpListener::bind(
+            "[::1]:0".parse().unwrap(),
+            EndpointId::from_bytes([2; 16]),
+            config,
+        )
+        .await
+        .unwrap();
+        let address = listener.local_addr().unwrap();
+        let context = ConnectContext::default();
+        let (server, client) = tokio::join!(
+            listener.accept(EndpointId::from_bytes([1; 16])),
+            connect(
+                address,
+                EndpointId::from_bytes([1; 16]),
+                EndpointId::from_bytes([2; 16]),
+                config,
+                &context,
+            )
+        );
+        let (mut server, mut client) = (server.unwrap(), client.unwrap());
+        mutsuki_link_transport_testkit::run_session_transport_suite(&mut client, &mut server).await;
+    }
 }

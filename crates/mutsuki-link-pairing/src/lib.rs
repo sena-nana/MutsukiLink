@@ -28,6 +28,6 @@ pub use file_store::FileTrustStore;
 pub use keyring_store::SystemKeyringTrustStore;
 pub use rate_limit::{PairingAttemptLimiter, PairingRateLimit};
 pub use trust::{
-    KeyState, LinkPermission, TrustRecord, TrustStore, TrustStoreError, TrustStoreErrorKind,
-    authorize_trusted_reconnect,
+    DEFAULT_MAX_TRUST_RECORDS, KeyState, LinkPermission, TrustRecord, TrustStore, TrustStoreError,
+    TrustStoreErrorKind, authorize_trusted_reconnect,
 };

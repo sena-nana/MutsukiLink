@@ -12,7 +12,7 @@ default = []
 system-keyring = ["dep:keyring"]
 
 [dependencies]
-mutsuki-link-core = { path = "../mutsuki-link-core" }
+mutsuki-link-core = { version = "0.1.0", path = "../mutsuki-link-core" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

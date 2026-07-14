@@ -84,6 +84,8 @@ pub trait DiscoveryProvider {
 pub struct RateLimit {
     pub attempts: usize,
     pub window: Duration,
+    pub max_sources: usize,
+    pub max_candidates: usize,
 }
 
 #[derive(Debug)]
@@ -94,7 +96,11 @@ pub struct AttemptRateLimiter {
 
 impl AttemptRateLimiter {
     pub fn new(limit: RateLimit) -> Result<Self, DiscoveryError> {
-        if limit.attempts == 0 || limit.window.is_zero() {
+        if limit.attempts == 0
+            || limit.window.is_zero()
+            || limit.max_sources == 0
+            || limit.max_candidates == 0
+        {
             return Err(error(
                 DiscoveryErrorKind::InvalidInput,
                 "rate limit must be positive",
@@ -107,6 +113,14 @@ impl AttemptRateLimiter {
     }
 
     pub fn allow(&mut self, source: &str, now: Instant) -> bool {
+        self.attempts.retain(|_, attempts| {
+            attempts
+                .back()
+                .is_some_and(|attempt| now.saturating_duration_since(*attempt) < self.limit.window)
+        });
+        if !self.attempts.contains_key(source) && self.attempts.len() >= self.limit.max_sources {
+            return false;
+        }
         let attempts = self.attempts.entry(source.to_owned()).or_default();
         while attempts
             .front()
@@ -154,7 +168,9 @@ impl ManualDiscovery {
                 "manual discovery is not running",
             )
         })?;
-        if ttl.is_zero() || !self.limiter.allow(source, now) {
+        let at_capacity = !self.active.contains_key(&discovery_id)
+            && self.active.len() >= self.limiter.limit.max_candidates;
+        if ttl.is_zero() || at_capacity || !self.limiter.allow(source, now) {
             return Err(error(
                 if ttl.is_zero() {
                     DiscoveryErrorKind::InvalidInput
@@ -165,6 +181,9 @@ impl ManualDiscovery {
             ));
         }
         let expires_at = now + ttl;
+        self.pending.retain(
+            |event| !matches!(event, DiscoveryEvent::Found(peer) if peer.discovery_id == discovery_id),
+        );
         self.active.insert(discovery_id, expires_at);
         self.pending
             .push_back(DiscoveryEvent::Found(DiscoveredPeer {
@@ -458,6 +477,8 @@ mod tests {
         let mut provider = ManualDiscovery::new(RateLimit {
             attempts: 1,
             window: Duration::from_secs(60),
+            max_sources: 2,
+            max_candidates: 2,
         })
         .unwrap();
         provider
@@ -506,6 +527,75 @@ mod tests {
         assert_eq!(
             provider.poll(now + Duration::from_secs(31)).unwrap(),
             vec![DiscoveryEvent::Expired(DiscoveryId::from_bytes([1; 16]))]
+        );
+    }
+
+    #[test]
+    fn discovery_storm_is_bounded_by_source_candidate_and_pending_limits() {
+        let now = Instant::now();
+        let mut limiter = AttemptRateLimiter::new(RateLimit {
+            attempts: 1,
+            window: Duration::from_millis(1),
+            max_sources: 2,
+            max_candidates: 1,
+        })
+        .unwrap();
+        assert!(limiter.allow("one", now));
+        assert!(limiter.allow("two", now));
+        for index in 0..10_000 {
+            assert!(!limiter.allow(&format!("attacker-{index}"), now));
+        }
+        assert!(limiter.allow("after-expiry", now + Duration::from_millis(1)));
+
+        let mut provider = ManualDiscovery::new(RateLimit {
+            attempts: 1,
+            window: Duration::from_millis(1),
+            max_sources: 1,
+            max_candidates: 1,
+        })
+        .unwrap();
+        provider
+            .start(
+                DiscoveryRequest {
+                    service_type: "_bounded._tcp.local.".to_owned(),
+                    max_results_per_poll: 1,
+                },
+                now,
+            )
+            .unwrap();
+        let endpoint = DiscoveredEndpoint {
+            address: EndpointAddress {
+                scheme: "tcp".to_owned(),
+                address: "127.0.0.1:1".to_owned(),
+            },
+            priority: 0,
+            advertised_security: SecurityLevel::Plaintext,
+        };
+        for index in 0..1_000 {
+            provider
+                .add_address(
+                    "same-source",
+                    DiscoveryId::from_bytes([1; 16]),
+                    endpoint.clone(),
+                    Duration::from_secs(60),
+                    now + Duration::from_millis(index),
+                )
+                .unwrap();
+            assert_eq!(provider.active.len(), 1);
+            assert_eq!(provider.pending.len(), 1);
+        }
+        assert_eq!(
+            provider
+                .add_address(
+                    "same-source",
+                    DiscoveryId::from_bytes([2; 16]),
+                    endpoint,
+                    Duration::from_secs(60),
+                    now + Duration::from_secs(2),
+                )
+                .unwrap_err()
+                .kind,
+            DiscoveryErrorKind::RateLimited
         );
     }
 }

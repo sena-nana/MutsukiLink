@@ -18,22 +18,22 @@ cargo metadata --no-deps --format-version 1 >/dev/null
 cargo check -p mutsuki-link-core --no-default-features
 cargo check -p mutsuki-link --no-default-features
 
-if cargo tree -p mutsuki-link --no-default-features --features local | rg 'quinn|rustls|mdns-sd|mutsuki-link-quic|mutsuki-link-tcp|mutsuki-link-discovery'; then
+if cargo tree -e normal -p mutsuki-link --no-default-features --features local | rg 'quinn|rustls|mdns-sd|mutsuki-link-quic|mutsuki-link-tcp|mutsuki-link-discovery'; then
   echo "local feature unexpectedly includes TCP or QUIC/TLS" >&2
   exit 1
 fi
 
-if cargo tree -p mutsuki-link --no-default-features --features tcp | rg 'quinn|rustls|mdns-sd|mutsuki-link-quic|interprocess|mutsuki-link-local|mutsuki-link-discovery'; then
+if cargo tree -e normal -p mutsuki-link --no-default-features --features tcp | rg 'quinn|rustls|mdns-sd|mutsuki-link-quic|interprocess|mutsuki-link-local|mutsuki-link-discovery'; then
   echo "TCP feature unexpectedly includes local IPC or QUIC/TLS" >&2
   exit 1
 fi
 
-if cargo tree -p mutsuki-link --no-default-features --features discovery | rg 'mdns-sd'; then
+if cargo tree -e normal -p mutsuki-link --no-default-features --features discovery | rg 'mdns-sd'; then
   echo "discovery feature unexpectedly includes the mDNS backend" >&2
   exit 1
 fi
 
-if cargo tree -p mutsuki-link --no-default-features --features pairing | rg 'keyring|security-framework|linux-keyutils'; then
+if cargo tree -e normal -p mutsuki-link --no-default-features --features pairing | rg 'keyring|security-framework|linux-keyutils'; then
   echo "pairing feature unexpectedly includes a system credential backend" >&2
   exit 1
 fi
@@ -51,3 +51,7 @@ fi
 cargo check -p mutsuki-link --example peer_echo
 cargo check -p mutsuki-link --example manual_server --features local
 cargo check -p mutsuki-link --example headless_pairing --features pairing
+cargo check -p mutsuki-link --example discovery_pairing --features discovery,pairing
+cargo check -p mutsuki-link --example local_sidecar --features local
+cargo check -p mutsuki-link --example multiplex
+cargo check -p mutsuki-link --example release_baseline --features local,tcp,quic
