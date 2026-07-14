@@ -3,6 +3,11 @@ resolver = "2"
 members = [
     "crates/mutsuki-link",
     "crates/mutsuki-link-core",
+    "crates/mutsuki-link-io",
+    "crates/mutsuki-link-local",
+    "crates/mutsuki-link-quic",
+    "crates/mutsuki-link-tcp",
+    "crates/mutsuki-link-transport-testkit",
 ]
 
 [workspace.package]
@@ -11,6 +16,15 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT"
 repository = "https://github.com/sena-nana/MutsukiLink"
+
+[workspace.dependencies]
+bytes = "1.11.1"
+interprocess = { version = "2.4.2", default-features = false, features = ["tokio"] }
+quinn = { version = "0.11.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rcgen = "0.13.2"
+rustls = { version = "0.23.37", default-features = false, features = ["ring", "std"] }
+socket2 = "0.6.5"
+tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

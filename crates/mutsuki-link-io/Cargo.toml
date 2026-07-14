@@ -1,0 +1,16 @@
+[package]
+name = "mutsuki-link-io"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal bounded Tokio I/O bridge for MutsukiLink transports"
+publish = false
+
+[dependencies]
+mutsuki-link-core = { path = "../mutsuki-link-core" }
+tokio.workspace = true
+
+[lints]
+workspace = true

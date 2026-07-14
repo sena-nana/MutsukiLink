@@ -19,6 +19,7 @@ mod error;
 mod handshake;
 mod identity;
 mod mux;
+mod selection;
 mod session;
 mod transport;
 
@@ -35,14 +36,18 @@ pub use mux::{
     CONTROL_CHANNEL_ID, ChannelConfig, ChannelId, ChannelKey, ChannelMode, Envelope, EnvelopeFlags,
     Multiplexer, MultiplexerLimits, OutboundFrame,
 };
+pub use selection::{
+    AttemptFailure, FallbackPlan, FallbackPolicy, SecurityLevel, SelectionError, TransportAttempt,
+    TransportCandidate, TransportKind, TransportSelection,
+};
 pub use session::{
     CloseReason, ConnectionQuality, EventSubscriberId, Session, SessionEvent, SessionEventBus,
     SessionInfo, SessionState,
 };
 pub use transport::{
     CancellationToken, ConnectContext, Connection, ConnectionMetadata, EndpointAddress, Listener,
-    MemoryConnection, MemoryTransportConfig, OperationContext, Transport, TransportError,
-    TransportErrorKind, memory_transport_pair,
+    MemoryConnection, MemoryTransportConfig, OperationContext, Transport, TransportBudget,
+    TransportError, TransportErrorKind, memory_transport_pair,
 };
 
 /// Current wire protocol major version.
