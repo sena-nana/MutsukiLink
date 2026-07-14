@@ -12,8 +12,10 @@
 
 Desktop CI runs the complete workspace on Windows, macOS, and Linux. The local transport test uses
 the platform implementation selected by `interprocess`: Unix-domain sockets on macOS/Linux and a
-Windows named pipe on Windows. TCP and QUIC loopback tests cover IPv4 and IPv6. QUIC additionally
-tests endpoint rebinding for address changes. LAN routing, Wi-Fi changes, sleep/wake, and actual
+Windows named pipe on Windows. TCP loopback covers IPv4 and IPv6 on every desktop runner; QUIC
+covers IPv4 on every desktop and IPv6 on macOS/Linux because the hosted Windows runner exposes no
+bindable IPv6 UDP loopback to Quinn. QUIC additionally tests endpoint rebinding for address changes.
+LAN routing, Wi-Fi changes, sleep/wake, and actual
 mobile background/foreground transitions remain hardware/OS acceptance items in the release
 checklist; the equivalent bounded state transitions are deterministic core tests.
 

@@ -32,7 +32,8 @@ CI additionally verifies:
 - complete tests on Windows, macOS, and Linux;
 - Android arm64 and iOS arm64 core/pairing-only compilation;
 - Unix-domain socket or Windows named-pipe local IPC according to the runner;
-- TCP/QUIC IPv4 and IPv6 loopback and QUIC endpoint rebinding;
+- TCP IPv4/IPv6 on every desktop, QUIC IPv4 on every desktop, QUIC IPv6 on macOS/Linux, and QUIC
+  endpoint rebinding;
 - minimal, individual, and representative combined facade features;
 - MSRV 1.85 and standalone Cargo packages with no Mutsuki product dependency.
 

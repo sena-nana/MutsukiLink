@@ -632,6 +632,9 @@ mod tests {
         );
     }
 
+    // GitHub's Windows runner has IPv6 TCP but no bindable IPv6 UDP loopback
+    // for Quinn. Windows still exercises QUIC over IPv4 and TCP over IPv6.
+    #[cfg(not(windows))]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn quic_ipv6_loopback_round_trip() {
         let (server_config, client_config) = crypto_configs();
