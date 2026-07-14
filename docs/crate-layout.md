@@ -12,8 +12,8 @@ The crate family is split by dependency weight and runtime ownership:
 | `mutsuki-link-pairing` | optional pairing ceremony and trust-store contracts/backends | crypto/storage backend, opt-in |
 | `mutsuki-link` | feature-gated convenience facade | core only by default |
 
-Phase 0 creates only `mutsuki-link-core` and the minimal aggregate facade. Other crates enter the
-workspace with their implementing issue, so their names do not become placeholder APIs.
+The current workspace contains `mutsuki-link-core` and the minimal aggregate facade. Other crates
+enter the workspace with their implementing issue, so their names do not become placeholder APIs.
 
 Concrete features must be additive and independent. For example, selecting local IPC must not pull
 in QUIC/TLS or discovery, and selecting TCP must not initialize mDNS. Applications may depend on

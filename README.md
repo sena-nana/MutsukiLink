@@ -15,4 +15,5 @@ No default feature starts a thread, opens a port, scans a network, loads a TLS/Q
 in a Mutsuki runtime repository.
 
 See [architecture](docs/architecture.md), [compatibility](docs/compatibility.md), and the planned
-[crate layout](docs/crate-layout.md).
+[crate layout](docs/crate-layout.md). The runtime-neutral [core contracts](docs/core-contracts.md)
+document handshake, transport, session, multiplexing, and bounded-memory semantics.
