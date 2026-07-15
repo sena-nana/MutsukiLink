@@ -1,0 +1,22 @@
+[package]
+name = "ntp-mutsuki-link"
+description = "Low-latency NanaTracking Protocol binding for MutsukiLink"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mutsuki-link-core = { version = "0.1.0", path = "../mutsuki-link-core" }
+nana-tracking-protocol.workspace = true
+
+[dev-dependencies]
+mutsuki-link-quic = { version = "0.1.0", path = "../mutsuki-link-quic" }
+quinn.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

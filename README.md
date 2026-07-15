@@ -24,6 +24,7 @@ cargo check -p mutsuki-link --features discovery
 cargo check -p mutsuki-link --features mdns
 cargo check -p mutsuki-link --features pairing
 cargo check -p mutsuki-link --features system-keyring
+cargo check -p ntp-mutsuki-link
 ```
 
 See [architecture](docs/architecture.md), [compatibility](docs/compatibility.md), and the planned
@@ -55,6 +56,12 @@ Realtime applications can keep their business protocol outside MutsukiLink while
 Datagram flows, latest-sequence replacement, deadlines, priority, current path payload limits,
 bounded drop-oldest receive queues, reconnect reset, and per-flow telemetry. MutsukiLink does not
 interpret media, tracking, sensor, or other application payloads.
+
+NanaTracking producers use the independent `ntp-mutsuki-link` adapter rather than adding tracking
+types to Link core. It negotiates the NTP descriptor and compact layout over a reserved reliable
+control protocol, sends a one-Datagram compact Rig plus latest-only absolute result fragments, and
+returns canonical `NanaTrackingResult` values to remote consumers. Dense geometry is a separate
+low-frequency or on-demand flow. See [NTP remote producer binding](docs/ntp-remote-producer.md).
 
 Before deployment or release, follow [security deployment](docs/security-deployment.md) and the
 [release checklist](docs/release-checklist.md). The checklist includes the enforced

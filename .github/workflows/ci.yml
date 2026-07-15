@@ -53,6 +53,7 @@ jobs:
       - run: cargo run --release -p mutsuki-link --example release_baseline --features local,tcp,quic
       - run: cargo package -p mutsuki-link-core --allow-dirty
       - run: cargo package -p mutsuki-link --allow-dirty --list
+      - run: cargo package -p ntp-mutsuki-link --allow-dirty --list
 
   msrv:
     runs-on: ubuntu-latest

@@ -14,6 +14,7 @@ bash scripts/check-boundaries.sh
 cargo run --release -p mutsuki-link --example release_baseline --features local,tcp,quic
 cargo package -p mutsuki-link-core
 cargo package -p mutsuki-link --list
+cargo package -p ntp-mutsuki-link --list
 ```
 
 The facade package uses `--list` until its version-matched internal Link crates are published; Cargo

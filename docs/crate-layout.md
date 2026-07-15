@@ -13,6 +13,7 @@ The crate family is split by dependency weight and runtime ownership:
 | `mutsuki-link-pairing` | optional pairing ceremony and trust-store contracts/backends | crypto/storage backend, opt-in |
 | `mutsuki-link` | feature-gated convenience facade | core only by default |
 | `mutsuki-link-transport-testkit` | internal shared Session acceptance suite | test only |
+| `ntp-mutsuki-link` | independent NanaTracking Protocol control/session and realtime-flow binding | Link core plus pinned framework-neutral NTP protocol crate |
 
 The current workspace contains core, the minimal aggregate facade, local/TCP/QUIC transports,
 discovery, and pairing/trust-store crates. Future provider crates enter with their implementing issue,

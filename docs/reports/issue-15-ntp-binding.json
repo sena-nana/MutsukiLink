@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "issue": "sena-nana/MutsukiLink#15",
+  "date": "2026-07-16",
+  "platform": "macOS local host",
+  "smoke_only": true,
+  "ntp_revision": "919f7f23c246c64c0ea36742a5813899903dadb4",
+  "transport": {
+    "kind": "QUIC IPv4 loopback",
+    "conservative_datagram_payload_bytes": 1100,
+    "link_realtime_header_bytes": 20,
+    "adapter_fragment_header_bytes": 18
+  },
+  "full_profile": {
+    "signals": 76,
+    "compact_frame_bytes": 360,
+    "canonical_result_bytes": 3262,
+    "canonical_fragments": 4,
+    "geometry_cadence_frames": 15,
+    "estimated_wire_bits_per_second": {
+      "60_fps": 1930080,
+      "120_fps": 3860160
+    }
+  },
+  "functional_evidence": {
+    "descriptor_handshake": "Proposal-Accept-Confirm-Ready",
+    "full_skeleton": true,
+    "compact_callback_uses_ntp_layout": true,
+    "consumer_type": "NanaTrackingResult",
+    "loss_recovery": "latest-only bounded reassembly; next absolute sequence replaces incomplete state",
+    "receiver_report": ["received", "dropped", "stale", "jitter_ns", "result_age_ns", "clock_uncertainty_ns"],
+    "one_hour_120_fps_frames": 432000,
+    "result_age_accumulation": false
+  },
+  "excluded_claims": [
+    "real Wi-Fi performance",
+    "iOS producer camera quality",
+    "NanaLive recording equivalence",
+    "Windows runtime validation",
+    "production readiness"
+  ]
+}

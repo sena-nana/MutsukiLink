@@ -10,6 +10,7 @@ members = [
     "crates/mutsuki-link-quic",
     "crates/mutsuki-link-tcp",
     "crates/mutsuki-link-transport-testkit",
+    "crates/ntp-mutsuki-link",
 ]
 
 [workspace.package]
@@ -24,6 +25,7 @@ bytes = "1.11.1"
 interprocess = { version = "2.4.2", default-features = false, features = ["tokio"] }
 keyring = { version = "3.6.3", default-features = false }
 mdns-sd = { version = "0.20.1", default-features = false }
+nana-tracking-protocol = { version = "0.1.0", git = "https://github.com/sena-nana/NanaTracking.git", rev = "919f7f23c246c64c0ea36742a5813899903dadb4", default-features = false, features = ["std"] }
 quinn = { version = "0.11.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rcgen = "0.13.2"
 rustls = { version = "0.23.37", default-features = false, features = ["ring", "std"] }

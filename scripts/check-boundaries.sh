@@ -4,8 +4,13 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-if rg -n 'MutsukiCore|MutsukiServiceHost|MutsukiDistributedHost|mutsuki-runtime|tokio|quinn|rustls|mdns' crates/mutsuki-link-core/Cargo.toml; then
+if rg -n 'MutsukiCore|MutsukiServiceHost|MutsukiDistributedHost|mutsuki-runtime|nana-tracking|tokio|quinn|rustls|mdns' crates/mutsuki-link-core/Cargo.toml; then
   echo "forbidden runtime, product, or concrete network dependency in link-core" >&2
+  exit 1
+fi
+
+if rg -n --glob '*.rs' 'NanaTracking|SignalId|ARKit|MediaPipe|Maxine|TrueDepth' crates/mutsuki-link-core; then
+  echo "tracking protocol or backend type leaked into link-core" >&2
   exit 1
 fi
 
@@ -17,6 +22,7 @@ fi
 cargo metadata --no-deps --format-version 1 >/dev/null
 cargo check -p mutsuki-link-core --no-default-features
 cargo check -p mutsuki-link --no-default-features
+cargo check -p ntp-mutsuki-link
 
 if cargo tree -e normal -p mutsuki-link --no-default-features --features local | rg 'quinn|rustls|mdns-sd|mutsuki-link-quic|mutsuki-link-tcp|mutsuki-link-discovery'; then
   echo "local feature unexpectedly includes TCP or QUIC/TLS" >&2

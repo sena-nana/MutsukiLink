@@ -450,6 +450,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "nana-tracking-protocol"
+version = "0.1.0"
+source = "git+https://github.com/sena-nana/NanaTracking.git?rev=919f7f23c246c64c0ea36742a5813899903dadb4#919f7f23c246c64c0ea36742a5813899903dadb4"
+dependencies = [
+ "serde",
+ "sha2",
+]
+
+[[package]]
+name = "ntp-mutsuki-link"
+version = "0.1.0"
+dependencies = [
+ "mutsuki-link-core",
+ "mutsuki-link-quic",
+ "nana-tracking-protocol",
+ "quinn",
+ "rcgen",
+ "rustls",
+ "tokio",
+]
+
+[[package]]
 name = "num-conv"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

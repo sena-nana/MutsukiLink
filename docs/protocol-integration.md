@@ -4,6 +4,13 @@ MutsukiLink provides discovery, pairing, authenticated sessions, transport, chan
 reconnect, and quality summaries. Product repositories own their message schemas, codecs,
 idempotency, synchronization, and business recovery.
 
+The workspace's `ntp-mutsuki-link` crate is the concrete example of this boundary: it depends on
+both generic Link core and the NanaTracking Protocol crate, while neither dependency knows about the
+other. It exposes only normalized NTP descriptors/results and generic Link connection contracts;
+ARKit, MediaPipe, Maxine, raw camera frames, and producer backend identity are not part of its
+standard channel. Its wire/session details are documented in
+[NTP remote producer binding](ntp-remote-producer.md).
+
 ## Registration and session boundary
 
 Each owner registers a `ProtocolDescriptor` before freezing the registry. A descriptor contains:
