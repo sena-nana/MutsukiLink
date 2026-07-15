@@ -50,6 +50,12 @@ cargo run --release -p mutsuki-link --example release_baseline --features local,
 See [upper protocol integration](docs/protocol-integration.md) for owner-crate boundaries and
 gradual migration guidance.
 
+Realtime applications can keep their business protocol outside MutsukiLink while using the generic
+`RealtimeDatagram` API. QUIC exposes protocol-bound reliable control handles, multiple independent
+Datagram flows, latest-sequence replacement, deadlines, priority, current path payload limits,
+bounded drop-oldest receive queues, reconnect reset, and per-flow telemetry. MutsukiLink does not
+interpret media, tracking, sensor, or other application payloads.
+
 Before deployment or release, follow [security deployment](docs/security-deployment.md) and the
 [release checklist](docs/release-checklist.md). The checklist includes the enforced
 local/TCP/QUIC performance baseline, mobile/desktop matrix, hardware lifecycle cases, standalone

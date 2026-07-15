@@ -22,6 +22,7 @@ mod identity;
 mod liveness;
 mod mux;
 mod protocol;
+mod realtime;
 mod reconnect;
 mod resume;
 mod security;
@@ -53,6 +54,12 @@ pub use protocol::{
     ProtocolDescriptor, ProtocolId, ProtocolRegistry, ProtocolRegistryError,
     ProtocolRegistryErrorKind, ProtocolRegistryLimits, ValidatedChannel,
 };
+pub use realtime::{
+    QueuedRealtimeDatagram, REALTIME_DATAGRAM_HEADER_LEN, RealtimeDatagram, RealtimeEvent,
+    RealtimeFlowId, RealtimeFlowTelemetry, RealtimePriority, RealtimeQueueConfig,
+    RealtimeSendQueue, RealtimeTelemetry, ReceivedRealtimeDatagram, SendOutcome,
+    decode_realtime_datagram, encode_realtime_datagram, realtime_flow_from_wire,
+};
 pub use reconnect::{
     ExponentialBackoff, ReconnectAction, ReconnectController, ReconnectFailure, ReconnectPolicy,
     ReconnectStopReason, RetryLimit,
@@ -76,9 +83,9 @@ pub use session::{
     SessionState,
 };
 pub use transport::{
-    CancellationToken, ConnectContext, Connection, ConnectionMetadata, EndpointAddress, Listener,
-    MemoryConnection, MemoryTransportConfig, OperationContext, Transport, TransportBudget,
-    TransportError, TransportErrorKind, memory_transport_pair,
+    CancellationToken, ConnectContext, Connection, ConnectionMetadata, ControlStream,
+    EndpointAddress, Listener, MemoryConnection, MemoryTransportConfig, OperationContext,
+    Transport, TransportBudget, TransportError, TransportErrorKind, memory_transport_pair,
 };
 
 /// Current wire protocol major version.

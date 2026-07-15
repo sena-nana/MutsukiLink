@@ -31,6 +31,21 @@ streams for Link control and data traffic, but never exposes QUIC stream ids to 
 protocols. Optional datagrams and current RTT are available through the transport-neutral connection.
 QUIC connection migration remains available through Quinn's stable connection handle.
 
+`Connection::open_control_stream` binds reliable control frames to a negotiated `ProtocolId` while
+retaining the reserved control-stream budget. `try_send_latest` uses a bounded, per-flow queue: a
+new generation or sequence replaces the unsent group for that flow, an expired group is discarded
+before entering QUIC, and critical/high-priority flows drain before disposable work. The adapter
+checks Quinn's Datagram send-buffer space before enqueueing into Quinn so congestion does not cause
+an unobservable global oldest-packet eviction. Applications fragment payloads themselves according
+to `max_datagram_payload`; MutsukiLink never converts an oversized Datagram into a reliable stream.
+
+Received Datagrams retain message boundaries and arrival time. The receive task has a hard queue
+limit and drops the oldest queued Datagram on overflow. `realtime_telemetry` reports queue, expiry,
+replacement, congestion, receive-overflow, RTT, estimated send rate, path payload, migration, and
+reconnect counters, including per-flow packet/byte/drop totals. After reconnect, callers invoke
+`reset_realtime_session` and create a new application generation; no queued payload is carried into
+the new session.
+
 The current API deliberately rejects `enable_zero_rtt = true`. Link control operations can mutate
 state and are not replay-safe; the connector always waits for a full authenticated handshake. A
 future 0-RTT API must accept only explicitly replay-safe application data and must never carry pairing,

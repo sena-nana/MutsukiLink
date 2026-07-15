@@ -13,25 +13,31 @@
 
 use bytes::Bytes;
 use mutsuki_link_core::{
-    ConnectContext, Connection, ConnectionMetadata, ConnectionQuality, EndpointId, SecurityLevel,
-    TransportBudget, TransportError, TransportErrorKind,
+    ConnectContext, Connection, ConnectionMetadata, ConnectionQuality, EndpointId,
+    REALTIME_DATAGRAM_HEADER_LEN, RealtimeDatagram, RealtimeEvent, RealtimeFlowId,
+    RealtimeFlowTelemetry, RealtimeQueueConfig, RealtimeSendQueue, RealtimeTelemetry,
+    ReceivedRealtimeDatagram, SecurityLevel, SendOutcome, TransportBudget, TransportError,
+    TransportErrorKind, decode_realtime_datagram, encode_realtime_datagram,
+    realtime_flow_from_wire,
 };
 use mutsuki_link_io::{ConnectionCounter, ConnectionPermit, FramedConnection, spawn_framed_halves};
 use quinn::{ClientConfig, Endpoint, ServerConfig, VarInt};
+use std::collections::{BTreeMap, VecDeque};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 const CONTROL_STREAM_PREFACE: &[u8; 9] = b"MLINK\0\x01\0C";
 const DATA_STREAM_PREFACE: &[u8; 9] = b"MLINK\0\x01\0D";
+const MAX_REALTIME_DATAGRAMS_PER_POLL: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QuicOptions {
     pub budget: TransportBudget,
     pub connect_timeout: Duration,
     pub enable_datagrams: bool,
+    pub realtime_queue: RealtimeQueueConfig,
     /// Reserved for future replay-safe application data. Link control frames
     /// reject this option and currently require a full handshake.
     pub enable_zero_rtt: bool,
@@ -43,6 +49,7 @@ impl Default for QuicOptions {
             budget: TransportBudget::default(),
             connect_timeout: Duration::from_secs(10),
             enable_datagrams: true,
+            realtime_queue: RealtimeQueueConfig::default(),
             enable_zero_rtt: false,
         }
     }
@@ -51,6 +58,12 @@ impl Default for QuicOptions {
 impl QuicOptions {
     fn validate(self) -> Result<Self, TransportError> {
         self.budget.validate()?;
+        if !self.realtime_queue.is_valid() {
+            return Err(TransportError::new(
+                TransportErrorKind::Other,
+                "realtime queue limits must be positive",
+            ));
+        }
         if self.enable_zero_rtt {
             return Err(TransportError::new(
                 TransportErrorKind::Unsupported,
@@ -67,10 +80,69 @@ pub struct QuicConnection {
     data: FramedConnection,
     connection: quinn::Connection,
     _endpoint: Endpoint,
-    datagram_rx: mpsc::Receiver<Vec<u8>>,
+    datagram_receive: Arc<Mutex<DatagramReceiveState>>,
     datagram_reader: JoinHandle<()>,
     datagrams_enabled: bool,
     max_datagram_bytes: usize,
+    realtime_send: RealtimeSendQueue,
+    realtime_events: VecDeque<RealtimeEvent>,
+    last_remote_address: SocketAddr,
+}
+
+#[derive(Debug)]
+struct RawReceivedDatagram {
+    received_at: Instant,
+    payload: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct DatagramReceiveState {
+    queue: VecDeque<RawReceivedDatagram>,
+    capacity: usize,
+    overflow: u64,
+    flow_stats: BTreeMap<RealtimeFlowId, RealtimeFlowTelemetry>,
+}
+
+impl DatagramReceiveState {
+    fn new(capacity: usize) -> Self {
+        Self {
+            queue: VecDeque::with_capacity(capacity),
+            capacity,
+            overflow: 0,
+            flow_stats: BTreeMap::new(),
+        }
+    }
+
+    fn push(&mut self, payload: Vec<u8>, received_at: Instant) {
+        if let Some(flow) = realtime_flow_from_wire(&payload) {
+            let stats = self.flow_stats.entry(flow).or_default();
+            stats.received = stats.received.saturating_add(1);
+            stats.received_bytes = stats
+                .received_bytes
+                .saturating_add(payload.len().saturating_sub(REALTIME_DATAGRAM_HEADER_LEN) as u64);
+        }
+        if self.queue.len() >= self.capacity {
+            if let Some(dropped) = self.queue.pop_front() {
+                self.overflow = self.overflow.saturating_add(1);
+                if let Some(flow) = realtime_flow_from_wire(&dropped.payload) {
+                    let stats = self.flow_stats.entry(flow).or_default();
+                    stats.receive_queue_overflow = stats.receive_queue_overflow.saturating_add(1);
+                }
+            }
+        }
+        self.queue.push_back(RawReceivedDatagram {
+            received_at,
+            payload,
+        });
+    }
+
+    fn pop(&mut self) -> Option<RawReceivedDatagram> {
+        self.queue.pop_front()
+    }
+
+    fn clear(&mut self) {
+        self.queue.clear();
+    }
 }
 
 impl QuicConnection {
@@ -94,6 +166,79 @@ impl QuicConnection {
     pub const fn supports_connection_migration(&self) -> bool {
         true
     }
+
+    fn current_raw_datagram_limit(&self) -> usize {
+        self.connection
+            .max_datagram_size()
+            .unwrap_or(0)
+            .min(self.max_datagram_bytes)
+    }
+
+    fn current_realtime_payload_limit(&self) -> usize {
+        self.current_raw_datagram_limit()
+            .saturating_sub(REALTIME_DATAGRAM_HEADER_LEN)
+    }
+
+    fn refresh_realtime_state(&mut self) -> Result<(), TransportError> {
+        if !self.datagrams_enabled {
+            return Ok(());
+        }
+        let payload_limit = self.current_realtime_payload_limit();
+        if payload_limit == 0 {
+            return Err(unsupported_datagram());
+        }
+        let previous = self.realtime_send.max_payload();
+        if self.realtime_send.set_max_payload(payload_limit)? {
+            self.realtime_events
+                .push_back(RealtimeEvent::DatagramPayloadChanged {
+                    previous,
+                    current: payload_limit,
+                });
+        }
+        let remote_address = self.connection.remote_address();
+        if remote_address != self.last_remote_address {
+            self.last_remote_address = remote_address;
+            self.realtime_send.note_migration();
+            self.realtime_events.push_back(RealtimeEvent::PathMigrated);
+        }
+        let stats = self.connection.stats();
+        let rtt_us = u64::try_from(stats.path.rtt.as_micros()).unwrap_or(u64::MAX);
+        let estimated_send_rate_bps = (rtt_us > 0).then(|| {
+            let rate = u128::from(stats.path.cwnd)
+                .saturating_mul(8_000_000)
+                .checked_div(u128::from(rtt_us))
+                .unwrap_or(0);
+            u64::try_from(rate).unwrap_or(u64::MAX)
+        });
+        self.realtime_send.note_network_metrics(
+            rtt_us,
+            estimated_send_rate_bps,
+            stats.path.congestion_events,
+        );
+        Ok(())
+    }
+
+    fn pop_raw_datagram(&mut self) -> Result<Option<RawReceivedDatagram>, TransportError> {
+        let message = self
+            .datagram_receive
+            .lock()
+            .expect("QUIC datagram receive lock")
+            .pop();
+        if message.is_some() {
+            return Ok(message);
+        }
+        if self.datagram_reader.is_finished() {
+            Err(TransportError::new(
+                TransportErrorKind::Closed,
+                "QUIC datagram receiver is closed",
+            ))
+        } else {
+            Err(TransportError::new(
+                TransportErrorKind::WouldBlock,
+                "no QUIC datagram is ready",
+            ))
+        }
+    }
 }
 
 impl Connection for QuicConnection {
@@ -109,6 +254,10 @@ impl Connection for QuicConnection {
         self.control.try_send_control(message)
     }
 
+    fn try_receive_control(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        self.control.try_receive()
+    }
+
     fn try_receive(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
         match self.control.try_receive() {
             Ok(message) => Ok(message),
@@ -121,7 +270,7 @@ impl Connection for QuicConnection {
         if !self.datagrams_enabled {
             return Err(unsupported_datagram());
         }
-        if message.len() > self.max_datagram_bytes {
+        if message.len() > self.current_raw_datagram_limit() {
             return Err(TransportError::new(
                 TransportErrorKind::MessageTooLarge,
                 "QUIC datagram exceeds configured limit",
@@ -146,20 +295,111 @@ impl Connection for QuicConnection {
         if !self.datagrams_enabled {
             return Err(unsupported_datagram());
         }
-        match self.datagram_rx.try_recv() {
-            Ok(message) => Ok(Some(message)),
-            Err(mpsc::error::TryRecvError::Empty) => Err(TransportError::new(
-                TransportErrorKind::WouldBlock,
-                "no QUIC datagram is ready",
-            )),
-            Err(mpsc::error::TryRecvError::Disconnected) => Err(TransportError::new(
-                TransportErrorKind::Closed,
-                "QUIC datagram receiver is closed",
-            )),
+        self.pop_raw_datagram()
+            .map(|message| message.map(|item| item.payload))
+    }
+
+    fn max_datagram_payload(&self) -> Option<usize> {
+        self.datagrams_enabled
+            .then(|| self.current_realtime_payload_limit())
+            .filter(|payload| *payload > 0)
+    }
+
+    fn try_send_latest(
+        &mut self,
+        datagram: RealtimeDatagram<'_>,
+    ) -> Result<SendOutcome, TransportError> {
+        if !self.datagrams_enabled {
+            return Ok(SendOutcome::Unsupported);
+        }
+        self.refresh_realtime_state()?;
+        let now = Instant::now();
+        let drops_before = self
+            .realtime_send
+            .congestion_dropped_for_flow(datagram.flow);
+        let outcome = self.realtime_send.enqueue(datagram, now)?;
+        self.poll_realtime(now)?;
+        let drops_after = self
+            .realtime_send
+            .congestion_dropped_for_flow(datagram.flow);
+        Ok(if drops_after > drops_before {
+            SendOutcome::DroppedCongested
+        } else {
+            outcome
+        })
+    }
+
+    fn poll_realtime(&mut self, now: Instant) -> Result<usize, TransportError> {
+        if !self.datagrams_enabled {
+            return Err(unsupported_datagram());
+        }
+        self.refresh_realtime_state()?;
+        let mut sent = 0usize;
+        loop {
+            if sent >= MAX_REALTIME_DATAGRAMS_PER_POLL {
+                return Ok(sent);
+            }
+            let available = self.connection.datagram_send_buffer_space();
+            if let Some(datagram) = self.realtime_send.pop_next_fitting(now, available) {
+                let encoded = encode_realtime_datagram(&datagram)?;
+                self.connection
+                    .send_datagram(Bytes::from(encoded))
+                    .map_err(map_datagram_error)?;
+                self.realtime_send.note_sent(&datagram);
+                sent = sent.saturating_add(1);
+                continue;
+            }
+            if self.realtime_send.pending_datagrams() > 0 {
+                self.realtime_send.note_transport_congestion();
+                if self.realtime_send.drop_disposable_for_congestion() > 0 {
+                    continue;
+                }
+            }
+            return Ok(sent);
         }
     }
 
+    fn try_receive_realtime(&mut self) -> Result<Option<ReceivedRealtimeDatagram>, TransportError> {
+        if !self.datagrams_enabled {
+            return Err(unsupported_datagram());
+        }
+        let message = self.pop_raw_datagram()?;
+        message
+            .map(|item| decode_realtime_datagram(&item.payload, item.received_at))
+            .transpose()
+    }
+
+    fn realtime_telemetry(&self) -> RealtimeTelemetry {
+        let mut telemetry = self.realtime_send.telemetry();
+        let receive = self
+            .datagram_receive
+            .lock()
+            .expect("QUIC datagram receive lock");
+        telemetry.receive_queue_overflow = receive.overflow;
+        for (flow, receive_stats) in &receive.flow_stats {
+            let stats = telemetry.flows.entry(*flow).or_default();
+            stats.received = receive_stats.received;
+            stats.received_bytes = receive_stats.received_bytes;
+            stats.receive_queue_overflow = receive_stats.receive_queue_overflow;
+        }
+        telemetry
+    }
+
+    fn take_realtime_events(&mut self) -> Vec<RealtimeEvent> {
+        self.realtime_events.drain(..).collect()
+    }
+
+    fn reset_realtime_session(&mut self) {
+        self.realtime_send.reset_for_reconnect();
+        self.datagram_receive
+            .lock()
+            .expect("QUIC datagram receive lock")
+            .clear();
+        self.realtime_events.push_back(RealtimeEvent::SessionReset);
+    }
+
     fn close_write(&mut self) -> Result<(), TransportError> {
+        self.realtime_send.clear_pending();
         let control = self.control.close_write();
         let data = self.data.close_write();
         control.and(data)
@@ -172,6 +412,11 @@ impl Connection for QuicConnection {
     }
 
     fn abort(&mut self) {
+        self.realtime_send.clear_pending();
+        self.datagram_receive
+            .lock()
+            .expect("QUIC datagram receive lock")
+            .clear();
         self.control.abort();
         self.data.abort();
         self.datagram_reader.abort();
@@ -393,24 +638,40 @@ fn make_connection(
         options.budget,
         permit,
     )?;
-    let (datagram_tx, datagram_rx) = mpsc::channel(options.budget.receive_queue_capacity);
+    let datagram_receive = Arc::new(Mutex::new(DatagramReceiveState::new(
+        options.budget.receive_queue_capacity,
+    )));
+    let datagram_receive_task = Arc::clone(&datagram_receive);
     let datagram_connection = connection.clone();
     let datagram_reader = tokio::spawn(async move {
         while let Ok(message) = datagram_connection.read_datagram().await {
-            if datagram_tx.send(message.to_vec()).await.is_err() {
-                return;
-            }
+            datagram_receive_task
+                .lock()
+                .expect("QUIC datagram receive lock")
+                .push(message.to_vec(), Instant::now());
         }
     });
+    let max_datagram_bytes = options.budget.max_frame_bytes;
+    let realtime_payload = connection
+        .max_datagram_size()
+        .unwrap_or(0)
+        .min(max_datagram_bytes)
+        .saturating_sub(REALTIME_DATAGRAM_HEADER_LEN)
+        .max(1);
+    let realtime_send = RealtimeSendQueue::new(options.realtime_queue, realtime_payload)?;
+    let last_remote_address = connection.remote_address();
     Ok(QuicConnection {
         control,
         data,
         connection,
         _endpoint: endpoint,
-        datagram_rx,
+        datagram_receive,
         datagram_reader,
         datagrams_enabled,
-        max_datagram_bytes: options.budget.max_frame_bytes,
+        max_datagram_bytes,
+        realtime_send,
+        realtime_events: VecDeque::new(),
+        last_remote_address,
     })
 }
 
@@ -503,6 +764,21 @@ fn unsupported_datagram() -> TransportError {
         TransportErrorKind::Unsupported,
         "QUIC datagrams are not available",
     )
+}
+
+fn map_datagram_error(error: quinn::SendDatagramError) -> TransportError {
+    match error {
+        quinn::SendDatagramError::TooLarge => TransportError::new(
+            TransportErrorKind::MessageTooLarge,
+            "QUIC datagram exceeds path limit",
+        ),
+        quinn::SendDatagramError::UnsupportedByPeer | quinn::SendDatagramError::Disabled => {
+            unsupported_datagram()
+        }
+        quinn::SendDatagramError::ConnectionLost(_) => {
+            TransportError::new(TransportErrorKind::Closed, "QUIC connection is closed")
+        }
+    }
 }
 
 fn connection_limit() -> TransportError {
@@ -632,6 +908,201 @@ mod tests {
         );
     }
 
+    #[allow(clippy::too_many_lines)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn realtime_flows_and_reliable_control_round_trip_with_telemetry() {
+        let (server_config, client_config) = crypto_configs();
+        let options = QuicOptions {
+            budget: TransportBudget {
+                receive_queue_capacity: 8,
+                idle_timeout: None,
+                ..TransportBudget::default()
+            },
+            ..QuicOptions::default()
+        };
+        let listener = QuicListener::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            EndpointId::from_bytes([2; 16]),
+            server_config,
+            options,
+        )
+        .unwrap();
+        let connector =
+            QuicConnector::new("127.0.0.1:0".parse().unwrap(), client_config, options).unwrap();
+        let address = listener.local_addr().unwrap();
+        let context = ConnectContext::default();
+        let (server, client) = tokio::join!(
+            listener.accept(EndpointId::from_bytes([1; 16])),
+            connector.connect(
+                address,
+                "localhost",
+                EndpointId::from_bytes([1; 16]),
+                EndpointId::from_bytes([2; 16]),
+                &context,
+            )
+        );
+        let (mut server, mut client) = (server.unwrap(), client.unwrap());
+
+        let protocol = mutsuki_link_core::ProtocolId::new("mutsuki.realtime-test").unwrap();
+        let mut control = client.open_control_stream(protocol.clone()).unwrap();
+        assert_eq!(control.protocol(), &protocol);
+        control.try_send(b"configure").unwrap();
+        drop(control);
+        let mut server_control = server.open_control_stream(protocol).unwrap();
+        assert_eq!(wait_for_control(&mut server_control).await, b"configure");
+        drop(server_control);
+
+        let max_payload = client.max_datagram_payload().unwrap();
+        assert!(max_payload >= 1_100);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        assert_eq!(
+            client
+                .try_send_latest(RealtimeDatagram {
+                    flow: RealtimeFlowId(1),
+                    generation: 4,
+                    sequence: 10,
+                    deadline,
+                    priority: mutsuki_link_core::RealtimePriority::High,
+                    payload: b"sensor-a",
+                })
+                .unwrap(),
+            SendOutcome::Enqueued
+        );
+        assert_eq!(
+            client
+                .try_send_latest(RealtimeDatagram {
+                    flow: RealtimeFlowId(2),
+                    generation: 4,
+                    sequence: 10,
+                    deadline,
+                    priority: mutsuki_link_core::RealtimePriority::Normal,
+                    payload: b"sensor-b",
+                })
+                .unwrap(),
+            SendOutcome::Enqueued
+        );
+        assert_eq!(
+            client
+                .try_send_latest(RealtimeDatagram {
+                    flow: RealtimeFlowId(3),
+                    generation: 4,
+                    sequence: 10,
+                    deadline: Instant::now(),
+                    priority: mutsuki_link_core::RealtimePriority::Disposable,
+                    payload: b"expired",
+                })
+                .unwrap(),
+            SendOutcome::DroppedExpired
+        );
+        assert_eq!(
+            client
+                .try_send_latest(RealtimeDatagram {
+                    flow: RealtimeFlowId(1),
+                    generation: 4,
+                    sequence: 11,
+                    deadline,
+                    priority: mutsuki_link_core::RealtimePriority::Normal,
+                    payload: &vec![0; max_payload + 65_536],
+                })
+                .unwrap_err()
+                .kind,
+            TransportErrorKind::MessageTooLarge
+        );
+
+        let first = wait_for_realtime(&mut server).await;
+        let second = wait_for_realtime(&mut server).await;
+        let messages_by_flow: BTreeMap<_, _> = [first, second]
+            .into_iter()
+            .map(|message| (message.flow, message))
+            .collect();
+        assert_eq!(messages_by_flow[&RealtimeFlowId(1)].payload, b"sensor-a");
+        assert_eq!(messages_by_flow[&RealtimeFlowId(2)].payload, b"sensor-b");
+        assert!(
+            messages_by_flow
+                .values()
+                .all(|message| message.sequence == 10)
+        );
+
+        let sender = client.realtime_telemetry();
+        assert_eq!(sender.sent, 2);
+        assert_eq!(sender.expired, 1);
+        assert!(sender.rtt_us.is_some());
+        assert!(sender.estimated_send_rate_bps.is_some());
+        let receive_telemetry = server.realtime_telemetry();
+        assert_eq!(receive_telemetry.flows[&RealtimeFlowId(1)].received, 1);
+        assert_eq!(receive_telemetry.flows[&RealtimeFlowId(2)].received, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn receive_overflow_drops_oldest_and_reconnect_reset_clears_state() {
+        let (server_config, client_config) = crypto_configs();
+        let options = QuicOptions {
+            budget: TransportBudget {
+                receive_queue_capacity: 2,
+                idle_timeout: None,
+                ..TransportBudget::default()
+            },
+            ..QuicOptions::default()
+        };
+        let listener = QuicListener::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            EndpointId::from_bytes([2; 16]),
+            server_config,
+            options,
+        )
+        .unwrap();
+        let connector =
+            QuicConnector::new("127.0.0.1:0".parse().unwrap(), client_config, options).unwrap();
+        let address = listener.local_addr().unwrap();
+        let context = ConnectContext::default();
+        let (server, client) = tokio::join!(
+            listener.accept(EndpointId::from_bytes([1; 16])),
+            connector.connect(
+                address,
+                "localhost",
+                EndpointId::from_bytes([1; 16]),
+                EndpointId::from_bytes([2; 16]),
+                &context,
+            )
+        );
+        let (mut server, mut client) = (server.unwrap(), client.unwrap());
+        let deadline = Instant::now() + Duration::from_secs(1);
+        for sequence in 0..8 {
+            client
+                .try_send_latest(RealtimeDatagram {
+                    flow: RealtimeFlowId(5),
+                    generation: 1,
+                    sequence,
+                    deadline,
+                    priority: mutsuki_link_core::RealtimePriority::Disposable,
+                    payload: &[u8::try_from(sequence).unwrap()],
+                })
+                .unwrap();
+        }
+        let wait_deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        while server.realtime_telemetry().receive_queue_overflow < 6 {
+            assert!(tokio::time::Instant::now() < wait_deadline);
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(server.realtime_telemetry().receive_queue_overflow, 6);
+        let received = [
+            wait_for_realtime(&mut server).await,
+            wait_for_realtime(&mut server).await,
+        ];
+        assert!(
+            received
+                .iter()
+                .all(|message| message.flow == RealtimeFlowId(5))
+        );
+
+        server.reset_realtime_session();
+        assert_eq!(server.realtime_telemetry().reconnect_count, 1);
+        assert_eq!(
+            server.take_realtime_events(),
+            vec![RealtimeEvent::SessionReset]
+        );
+    }
+
     // GitHub's Windows runner has IPv6 TCP but no bindable IPv6 UDP loopback
     // for Quinn. Windows still exercises QUIC over IPv4 and TCP over IPv6.
     #[cfg(not(windows))]
@@ -679,5 +1150,66 @@ mod tests {
         .validate()
         .unwrap_err();
         assert_eq!(error.kind, TransportErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn bounded_receive_queue_drops_oldest_datagram_and_tracks_flow() {
+        let now = Instant::now();
+        let mut receive = DatagramReceiveState::new(2);
+        for sequence in 0..8 {
+            let queued = mutsuki_link_core::QueuedRealtimeDatagram {
+                flow: RealtimeFlowId(5),
+                generation: 1,
+                sequence,
+                deadline: now + Duration::from_secs(1),
+                priority: mutsuki_link_core::RealtimePriority::Disposable,
+                payload: vec![u8::try_from(sequence).unwrap()],
+            };
+            receive.push(encode_realtime_datagram(&queued).unwrap(), now);
+        }
+        assert_eq!(receive.overflow, 6);
+        assert_eq!(
+            receive.flow_stats[&RealtimeFlowId(5)].receive_queue_overflow,
+            6
+        );
+        let remaining: Vec<_> = [receive.pop().unwrap(), receive.pop().unwrap()]
+            .into_iter()
+            .map(|message| {
+                decode_realtime_datagram(&message.payload, message.received_at)
+                    .unwrap()
+                    .sequence
+            })
+            .collect();
+        assert_eq!(remaining, vec![6, 7]);
+    }
+
+    async fn wait_for_control(
+        connection: &mut mutsuki_link_core::ControlStream<'_, QuicConnection>,
+    ) -> Vec<u8> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            match connection.try_receive() {
+                Ok(Some(message)) => return message,
+                Err(error) if error.kind == TransportErrorKind::WouldBlock => {
+                    assert!(tokio::time::Instant::now() < deadline);
+                    tokio::task::yield_now().await;
+                }
+                result => panic!("unexpected control receive result: {result:?}"),
+            }
+        }
+    }
+
+    async fn wait_for_realtime(connection: &mut QuicConnection) -> ReceivedRealtimeDatagram {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            match connection.try_receive_realtime() {
+                Ok(Some(message)) => return message,
+                Err(error) if error.kind == TransportErrorKind::WouldBlock => {
+                    assert!(tokio::time::Instant::now() < deadline);
+                    tokio::task::yield_now().await;
+                }
+                result => panic!("unexpected realtime receive result: {result:?}"),
+            }
+        }
     }
 }

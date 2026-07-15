@@ -1,4 +1,7 @@
-use crate::{EndpointId, PeerId};
+use crate::{
+    EndpointId, PeerId, ProtocolId, RealtimeDatagram, RealtimeEvent, RealtimeTelemetry,
+    ReceivedRealtimeDatagram, SendOutcome,
+};
 use std::collections::VecDeque;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -95,6 +98,86 @@ impl OperationContext {
 
 pub type ConnectContext = OperationContext;
 
+const CONTROL_STREAM_MAGIC: [u8; 4] = *b"MLCS";
+const CONTROL_STREAM_VERSION: u8 = 1;
+const CONTROL_STREAM_HEADER_LEN: usize = 7;
+
+pub struct ControlStream<'a, C: Connection + ?Sized> {
+    protocol: ProtocolId,
+    connection: &'a mut C,
+}
+
+impl<C: Connection + ?Sized> ControlStream<'_, C> {
+    pub fn protocol(&self) -> &ProtocolId {
+        &self.protocol
+    }
+
+    pub fn try_send(&mut self, message: &[u8]) -> Result<(), TransportError> {
+        let protocol = self.protocol.as_str().as_bytes();
+        let protocol_len = u16::try_from(protocol.len()).map_err(|_| {
+            TransportError::new(
+                TransportErrorKind::MessageTooLarge,
+                "control stream protocol identifier is too large",
+            )
+        })?;
+        let capacity = CONTROL_STREAM_HEADER_LEN
+            .checked_add(protocol.len())
+            .and_then(|length| length.checked_add(message.len()))
+            .ok_or_else(|| {
+                TransportError::new(
+                    TransportErrorKind::MessageTooLarge,
+                    "control stream message is too large",
+                )
+            })?;
+        let mut framed = Vec::with_capacity(capacity);
+        framed.extend_from_slice(&CONTROL_STREAM_MAGIC);
+        framed.push(CONTROL_STREAM_VERSION);
+        framed.extend_from_slice(&protocol_len.to_be_bytes());
+        framed.extend_from_slice(protocol);
+        framed.extend_from_slice(message);
+        self.connection.try_send_control(&framed)
+    }
+
+    pub fn try_receive(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        let Some(framed) = self.connection.try_receive_control()? else {
+            return Ok(None);
+        };
+        if framed.len() < CONTROL_STREAM_HEADER_LEN
+            || framed[..4] != CONTROL_STREAM_MAGIC
+            || framed[4] != CONTROL_STREAM_VERSION
+        {
+            return Err(TransportError::new(
+                TransportErrorKind::Other,
+                "control stream frame is invalid",
+            ));
+        }
+        let protocol_len = usize::from(u16::from_be_bytes([framed[5], framed[6]]));
+        let payload_offset = CONTROL_STREAM_HEADER_LEN
+            .checked_add(protocol_len)
+            .ok_or_else(|| {
+                TransportError::new(
+                    TransportErrorKind::MessageTooLarge,
+                    "control stream frame size overflow",
+                )
+            })?;
+        let protocol = framed
+            .get(CONTROL_STREAM_HEADER_LEN..payload_offset)
+            .ok_or_else(|| {
+                TransportError::new(
+                    TransportErrorKind::Other,
+                    "control stream frame is truncated",
+                )
+            })?;
+        if protocol != self.protocol.as_str().as_bytes() {
+            return Err(TransportError::new(
+                TransportErrorKind::Other,
+                "control stream protocol does not match",
+            ));
+        }
+        Ok(Some(framed[payload_offset..].to_vec()))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TransportBudget {
     pub max_connections: usize,
@@ -161,6 +244,29 @@ pub trait Connection {
         self.try_send(message)
     }
 
+    fn try_receive_control(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        self.try_receive()
+    }
+
+    fn open_control_stream(
+        &mut self,
+        protocol: ProtocolId,
+    ) -> Result<ControlStream<'_, Self>, TransportError>
+    where
+        Self: Sized,
+    {
+        if !self.metadata().reliable {
+            return Err(TransportError::new(
+                TransportErrorKind::Unsupported,
+                "reliable control streams are not supported",
+            ));
+        }
+        Ok(ControlStream {
+            protocol,
+            connection: self,
+        })
+    }
+
     fn try_send_with_context(
         &mut self,
         message: &[u8],
@@ -193,6 +299,41 @@ pub trait Connection {
             "datagrams are not supported",
         ))
     }
+
+    fn max_datagram_payload(&self) -> Option<usize> {
+        None
+    }
+
+    fn try_send_latest(
+        &mut self,
+        _datagram: RealtimeDatagram<'_>,
+    ) -> Result<SendOutcome, TransportError> {
+        Ok(SendOutcome::Unsupported)
+    }
+
+    fn poll_realtime(&mut self, _now: Instant) -> Result<usize, TransportError> {
+        Err(TransportError::new(
+            TransportErrorKind::Unsupported,
+            "realtime datagrams are not supported",
+        ))
+    }
+
+    fn try_receive_realtime(&mut self) -> Result<Option<ReceivedRealtimeDatagram>, TransportError> {
+        Err(TransportError::new(
+            TransportErrorKind::Unsupported,
+            "realtime datagrams are not supported",
+        ))
+    }
+
+    fn realtime_telemetry(&self) -> RealtimeTelemetry {
+        RealtimeTelemetry::default()
+    }
+
+    fn take_realtime_events(&mut self) -> Vec<RealtimeEvent> {
+        Vec::new()
+    }
+
+    fn reset_realtime_session(&mut self) {}
 
     fn close_write(&mut self) -> Result<(), TransportError>;
     fn close_read(&mut self) -> Result<(), TransportError>;
@@ -480,6 +621,41 @@ mod tests {
         assert_eq!(
             context.check(Instant::now()).unwrap_err().kind,
             TransportErrorKind::Cancelled
+        );
+    }
+
+    #[test]
+    fn protocol_bound_control_stream_round_trips_and_rejects_cross_protocol_frames() {
+        let (mut left, mut right) =
+            memory_transport_pair(endpoint(1), endpoint(2), MemoryTransportConfig::default());
+        let protocol = ProtocolId::new("mutsuki.control-test").unwrap();
+        left.open_control_stream(protocol.clone())
+            .unwrap()
+            .try_send(b"hello")
+            .unwrap();
+        assert_eq!(
+            right
+                .open_control_stream(protocol)
+                .unwrap()
+                .try_receive()
+                .unwrap(),
+            Some(b"hello".to_vec())
+        );
+
+        let sender = ProtocolId::new("mutsuki.sender").unwrap();
+        let receiver = ProtocolId::new("mutsuki.receiver").unwrap();
+        left.open_control_stream(sender)
+            .unwrap()
+            .try_send(b"wrong namespace")
+            .unwrap();
+        assert_eq!(
+            right
+                .open_control_stream(receiver)
+                .unwrap()
+                .try_receive()
+                .unwrap_err()
+                .kind,
+            TransportErrorKind::Other
         );
     }
 }
