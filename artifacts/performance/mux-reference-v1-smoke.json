@@ -1,0 +1,137 @@
+{
+  "schema": "mutsuki-link-mux-baseline/1.0.0",
+  "smoke_only": true,
+  "claim_boundary": "Local in-memory scheduler benchmark only; not LAN, Wi-Fi, or production transport performance",
+  "operating_system": "macos",
+  "architecture": "aarch64",
+  "logical_cpus": 10,
+  "fixed_multiplexer_bytes": 208,
+  "priority_bands": 8,
+  "control_under_saturated_data": {
+    "p50": 42,
+    "p95": 42,
+    "p99": 42
+  },
+  "matrix": [
+    {
+      "channels": 1,
+      "payload_bytes": 1024,
+      "cycles_per_sample": 4096,
+      "p50_ns_per_frame": 81,
+      "p95_ns_per_frame": 86,
+      "p99_ns_per_frame": 86,
+      "frames_per_second": 12345679,
+      "steady_queue_slot_growth": 0
+    },
+    {
+      "channels": 1,
+      "payload_bytes": 16384,
+      "cycles_per_sample": 4096,
+      "p50_ns_per_frame": 70,
+      "p95_ns_per_frame": 71,
+      "p99_ns_per_frame": 71,
+      "frames_per_second": 14285714,
+      "steady_queue_slot_growth": 0
+    },
+    {
+      "channels": 1,
+      "payload_bytes": 65536,
+      "cycles_per_sample": 1024,
+      "p50_ns_per_frame": 70,
+      "p95_ns_per_frame": 75,
+      "p99_ns_per_frame": 75,
+      "frames_per_second": 14285714,
+      "steady_queue_slot_growth": 0
+    },
+    {
+      "channels": 1,
+      "payload_bytes": 1048576,
+      "cycles_per_sample": 64,
+      "p50_ns_per_frame": 70,
+      "p95_ns_per_frame": 71,
+      "p99_ns_per_frame": 71,
+      "frames_per_second": 14285714,
+      "steady_queue_slot_growth": 0
+    },
+    {
+      "channels": 16,
+      "payload_bytes": 1024,
+      "cycles_per_sample": 4096,
+      "p50_ns_per_frame": 127,
+      "p95_ns_per_frame": 197,
+      "p99_ns_per_frame": 197,
+      "frames_per_second": 7874015,
+      "steady_queue_slot_growth": 0
+    },
+    {
+      "channels": 16,
+      "payload_bytes": 16384,
+      "cycles_per_sample": 256,
+      "p50_ns_per_frame": 91,
+      "p95_ns_per_frame": 99,
+      "p99_ns_per_frame": 99,
+      "frames_per_second": 10989010,
+      "steady_queue_slot_growth": 0
+    },
+    {
+      "channels": 16,
+      "payload_bytes": 65536,
+      "cycles_per_sample": 64,
+      "p50_ns_per_frame": 91,
+      "p95_ns_per_frame": 91,
+      "p99_ns_per_frame": 91,
+      "frames_per_second": 10989010,
+      "steady_queue_slot_growth": 0
+    },
+    {
+      "channels": 16,
+      "payload_bytes": 1048576,
+      "cycles_per_sample": 4,
+      "p50_ns_per_frame": 91,
+      "p95_ns_per_frame": 92,
+      "p99_ns_per_frame": 92,
+      "frames_per_second": 10989010,
+      "steady_queue_slot_growth": 0
+    },
+    {
+      "channels": 64,
+      "payload_bytes": 1024,
+      "cycles_per_sample": 1024,
+      "p50_ns_per_frame": 294,
+      "p95_ns_per_frame": 336,
+      "p99_ns_per_frame": 336,
+      "frames_per_second": 3401360,
+      "steady_queue_slot_growth": 0
+    },
+    {
+      "channels": 64,
+      "payload_bytes": 16384,
+      "cycles_per_sample": 64,
+      "p50_ns_per_frame": 291,
+      "p95_ns_per_frame": 316,
+      "p99_ns_per_frame": 316,
+      "frames_per_second": 3436426,
+      "steady_queue_slot_growth": 0
+    },
+    {
+      "channels": 64,
+      "payload_bytes": 65536,
+      "cycles_per_sample": 16,
+      "p50_ns_per_frame": 289,
+      "p95_ns_per_frame": 302,
+      "p99_ns_per_frame": 302,
+      "frames_per_second": 3460207,
+      "steady_queue_slot_growth": 0
+    },
+    {
+      "channels": 64,
+      "payload_bytes": 1048576,
+      "cycles_per_sample": 4,
+      "p50_ns_per_frame": 309,
+      "p95_ns_per_frame": 381,
+      "p99_ns_per_frame": 381,
+      "frames_per_second": 3236245,
+      "steady_queue_slot_growth": 0
+    }
+  ]
+}

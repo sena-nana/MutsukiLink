@@ -15,20 +15,36 @@ use mutsuki_link::{
 };
 use quinn::{ClientConfig, ServerConfig};
 use rustls::RootCertStore;
+use serde::Serialize;
 use std::collections::BTreeSet;
 use std::error::Error;
+use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 const CONNECT_BUDGET_MS: u128 = 5_000;
-const RTT_P99_BUDGET_US: u128 = 1_000_000;
-const CONTROL_P99_BUDGET_US: u128 = 1_000_000;
-const MIN_THROUGHPUT_BYTES_PER_SECOND: u128 = 64 * 1024;
+const RTT_P99_BUDGET_US: u128 = 50_000;
+const CONTROL_P99_BUDGET_US: u128 = 50_000;
+const MIN_THROUGHPUT_BYTES_PER_SECOND: u128 = 4 * 1024 * 1024;
 const SHUTDOWN_BUDGET_MS: u128 = 2_000;
-const SAMPLE_COUNT: usize = 32;
-const THROUGHPUT_FRAMES: usize = 64;
-const FRAME_BYTES: usize = 16 * 1024;
+const RTT_SAMPLE_COUNT: usize = 128;
+const CONTROL_SAMPLE_COUNT: usize = 32;
+const WARMUP_SAMPLES: usize = 16;
+const THROUGHPUT_CASES: [(usize, usize); 4] = [
+    (1024, 1024),
+    (16 * 1024, 256),
+    (64 * 1024, 64),
+    (1024 * 1024, 8),
+];
 
+#[derive(Serialize)]
+struct ThroughputSample {
+    payload_bytes: usize,
+    frames: usize,
+    bytes_per_second: u128,
+}
+
+#[derive(Serialize)]
 struct Baseline {
     transport: &'static str,
     connect_us: u128,
@@ -36,9 +52,22 @@ struct Baseline {
     rtt_p95_us: u128,
     rtt_p99_us: u128,
     saturated_control_p99_us: u128,
-    throughput_bytes_per_second: u128,
+    throughput: Vec<ThroughputSample>,
     fixed_handle_bytes: usize,
     shutdown_us: u128,
+}
+
+#[derive(Serialize)]
+struct ReleaseReport<'a> {
+    schema: &'static str,
+    smoke_only: bool,
+    claim_boundary: &'static str,
+    operating_system: &'static str,
+    architecture: &'static str,
+    logical_cpus: usize,
+    handshake_us: u128,
+    idle_tick_ns: u128,
+    baselines: &'a [Baseline],
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
@@ -56,21 +85,42 @@ async fn main() -> Result<(), Box<dyn Error>> {
     for baseline in &baselines {
         enforce(baseline)?;
         println!(
-            "{} connect={}us rtt_p50={}us rtt_p95={}us rtt_p99={}us control_p99={}us throughput={}B/s handles={}B shutdown={}us",
+            "{} connect={}us rtt_p50={}us rtt_p95={}us rtt_p99={}us control_p99={}us min_throughput={}B/s handles={}B shutdown={}us",
             baseline.transport,
             baseline.connect_us,
             baseline.rtt_p50_us,
             baseline.rtt_p95_us,
             baseline.rtt_p99_us,
             baseline.saturated_control_p99_us,
-            baseline.throughput_bytes_per_second,
+            baseline
+                .throughput
+                .iter()
+                .map(|sample| sample.bytes_per_second)
+                .min()
+                .unwrap_or(0),
             baseline.fixed_handle_bytes,
             baseline.shutdown_us,
         );
     }
     println!(
-        "link_handshake={handshake_us}us idle_tick={idle_tick_ns}ns idle_actions={idle_actions} frame={FRAME_BYTES}B samples={SAMPLE_COUNT}"
+        "link_handshake={handshake_us}us idle_tick={idle_tick_ns}ns idle_actions={idle_actions} rtt_samples={RTT_SAMPLE_COUNT}"
     );
+    let report = ReleaseReport {
+        schema: "mutsuki-link-release-baseline/2.0.0",
+        smoke_only: true,
+        claim_boundary: "Local loopback transport smoke only; not LAN, Wi-Fi, or production latency",
+        operating_system: std::env::consts::OS,
+        architecture: std::env::consts::ARCH,
+        logical_cpus: std::thread::available_parallelism()?.get(),
+        handshake_us,
+        idle_tick_ns,
+        baselines: &baselines,
+    };
+    let json = serde_json::to_string_pretty(&report)?;
+    if let Ok(path) = std::env::var("MUTSUKI_LINK_OUTPUT") {
+        fs::write(path, json.as_bytes())?;
+    }
+    println!("{json}");
     Ok(())
 }
 
@@ -165,8 +215,14 @@ where
     Client: Connection,
     Server: Connection,
 {
-    let mut rtts = Vec::with_capacity(SAMPLE_COUNT);
-    for _ in 0..SAMPLE_COUNT {
+    for _ in 0..WARMUP_SAMPLES {
+        send_with_retry(&mut client, b"warmup", true).await?;
+        let request = receive_with_deadline(&mut server).await?;
+        send_with_retry(&mut server, &request, true).await?;
+        let _response = receive_with_deadline(&mut client).await?;
+    }
+    let mut rtts = Vec::with_capacity(RTT_SAMPLE_COUNT);
+    for _ in 0..RTT_SAMPLE_COUNT {
         let started = Instant::now();
         send_with_retry(&mut client, b"rtt", true).await?;
         let request = receive_with_deadline(&mut server).await?;
@@ -175,8 +231,8 @@ where
         rtts.push(started.elapsed().as_micros());
     }
 
-    let mut control_samples = Vec::with_capacity(SAMPLE_COUNT);
-    for _ in 0..SAMPLE_COUNT {
+    let mut control_samples = Vec::with_capacity(CONTROL_SAMPLE_COUNT);
+    for _ in 0..CONTROL_SAMPLE_COUNT {
         for _ in 0..32 {
             send_with_retry(&mut client, &[9; 1024], false).await?;
         }
@@ -190,17 +246,30 @@ where
         control_samples.push(started.elapsed().as_micros());
     }
 
-    let payload = vec![7; FRAME_BYTES];
-    let throughput_started = Instant::now();
-    for _ in 0..THROUGHPUT_FRAMES {
-        send_with_retry(&mut client, &payload, false).await?;
+    let mut throughput = Vec::with_capacity(THROUGHPUT_CASES.len());
+    for (payload_bytes, frames) in THROUGHPUT_CASES {
+        let payload = vec![7; payload_bytes];
+        let throughput_started = Instant::now();
+        let mut transferred = 0_u128;
+        let mut remaining = frames;
+        while remaining > 0 {
+            let batch = remaining.min(32);
+            for _ in 0..batch {
+                send_with_retry(&mut client, &payload, false).await?;
+            }
+            for _ in 0..batch {
+                transferred = transferred
+                    .saturating_add(receive_with_deadline(&mut server).await?.len() as u128);
+            }
+            remaining -= batch;
+        }
+        let elapsed_us = throughput_started.elapsed().as_micros().max(1);
+        throughput.push(ThroughputSample {
+            payload_bytes,
+            frames,
+            bytes_per_second: transferred.saturating_mul(1_000_000) / elapsed_us,
+        });
     }
-    let mut bytes = 0_u128;
-    for _ in 0..THROUGHPUT_FRAMES {
-        bytes = bytes.saturating_add(receive_with_deadline(&mut server).await?.len() as u128);
-    }
-    let elapsed_us = throughput_started.elapsed().as_micros().max(1);
-    let throughput_bytes_per_second = bytes.saturating_mul(1_000_000) / elapsed_us;
 
     let fixed_handle_bytes = std::mem::size_of::<Client>() + std::mem::size_of::<Server>();
     let shutdown_started = Instant::now();
@@ -219,7 +288,7 @@ where
         rtt_p95_us: percentile(&rtts, 95),
         rtt_p99_us: percentile(&rtts, 99),
         saturated_control_p99_us: percentile(&control_samples, 99),
-        throughput_bytes_per_second,
+        throughput,
         fixed_handle_bytes,
         shutdown_us,
     })
@@ -276,7 +345,7 @@ fn baseline_budget() -> TransportBudget {
         control_queue_capacity: 64,
         data_queue_capacity: 128,
         receive_queue_capacity: 128,
-        max_frame_bytes: 64 * 1024,
+        max_frame_bytes: 1024 * 1024,
         control_bytes_per_second: None,
         data_bytes_per_second: None,
         receive_bytes_per_second: None,
@@ -378,7 +447,11 @@ fn enforce(baseline: &Baseline) -> Result<(), Box<dyn Error>> {
     if baseline.saturated_control_p99_us > CONTROL_P99_BUDGET_US {
         return Err(format!("{} control latency budget exceeded", baseline.transport).into());
     }
-    if baseline.throughput_bytes_per_second < MIN_THROUGHPUT_BYTES_PER_SECOND {
+    if baseline
+        .throughput
+        .iter()
+        .any(|sample| sample.bytes_per_second < MIN_THROUGHPUT_BYTES_PER_SECOND)
+    {
         return Err(format!("{} throughput budget exceeded", baseline.transport).into());
     }
     if baseline.shutdown_us > SHUTDOWN_BUDGET_MS * 1_000 {

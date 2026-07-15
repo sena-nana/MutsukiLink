@@ -51,6 +51,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo run --release -p mutsuki-link --example release_baseline --features local,tcp,quic
+      - run: cargo run --release -p mutsuki-link --example mux_baseline
+        env:
+          MUTSUKI_LINK_BASELINE: artifacts/performance/mux-reference-v1-smoke.json
       - run: cargo package -p mutsuki-link-core --allow-dirty
       - run: cargo package -p mutsuki-link --allow-dirty --list
       - run: cargo package -p ntp-mutsuki-link --allow-dirty --list

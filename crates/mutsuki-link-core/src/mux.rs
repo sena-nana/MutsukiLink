@@ -24,6 +24,9 @@ pub enum ChannelMode {
 pub struct ChannelConfig {
     pub key: ChannelKey,
     pub mode: ChannelMode,
+    /// Scheduling hint for data channels. Values are mapped to eight bounded
+    /// weighted-fair bands: `0` is the lowest weight and `255` the highest.
+    /// Control traffic remains on its independently reserved queue.
     pub priority_hint: u8,
     pub capacity: usize,
 }
@@ -66,6 +69,15 @@ pub struct MultiplexerLimits {
     pub max_total_pending_frames: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MultiplexerStorageSnapshot {
+    pub channel_count: usize,
+    pub pending_frames: usize,
+    pub control_queue_slots: usize,
+    pub ready_queue_slots: usize,
+    pub data_queue_slots: usize,
+}
+
 impl Default for MultiplexerLimits {
     fn default() -> Self {
         Self {
@@ -83,6 +95,7 @@ struct ChannelState {
     config: ChannelConfig,
     queue: VecDeque<Envelope>,
     cancelled: bool,
+    virtual_finish: u128,
 }
 
 #[derive(Debug)]
@@ -92,6 +105,7 @@ pub struct Multiplexer {
     keys: BTreeMap<(String, ProtocolVersion), Vec<ChannelId>>,
     control: VecDeque<Vec<u8>>,
     ready: VecDeque<ChannelId>,
+    virtual_time: u128,
     total_pending: usize,
     allowed_protocols: Option<BTreeSet<(String, ProtocolVersion)>>,
 }
@@ -113,6 +127,7 @@ impl Multiplexer {
             keys: BTreeMap::new(),
             control: VecDeque::new(),
             ready: VecDeque::new(),
+            virtual_time: 0,
             total_pending: 0,
             allowed_protocols: None,
         })
@@ -162,6 +177,7 @@ impl Multiplexer {
                 config,
                 queue: VecDeque::new(),
                 cancelled: false,
+                virtual_finish: self.virtual_time,
             },
         );
         Ok(())
@@ -208,6 +224,7 @@ impl Multiplexer {
             });
         }
         if state.queue.is_empty() {
+            state.virtual_finish = state.virtual_finish.max(self.virtual_time);
             self.ready.push_back(channel_id);
         }
         state.queue.push_back(envelope);
@@ -241,6 +258,7 @@ impl Multiplexer {
             return Ok(QueueAdmission::DroppedDiscardable);
         }
         if state.queue.is_empty() {
+            state.virtual_finish = state.virtual_finish.max(self.virtual_time);
             self.ready.push_back(channel_id);
         }
         state.queue.push_back(envelope);
@@ -253,20 +271,41 @@ impl Multiplexer {
             self.total_pending -= 1;
             return Some(OutboundFrame::Control(control));
         }
-        while let Some(channel_id) = self.ready.pop_front() {
+        loop {
+            let selected = self
+                .ready
+                .iter()
+                .enumerate()
+                .filter_map(|(index, channel_id)| {
+                    let state = self.channels.get(channel_id)?;
+                    state.queue.front().map(|_| (index, state.virtual_finish))
+                })
+                .min_by_key(|(index, virtual_finish)| (*virtual_finish, *index));
+            let Some((index, _)) = selected else {
+                self.ready.clear();
+                return None;
+            };
+            let Some(channel_id) = self.ready.remove(index) else {
+                continue;
+            };
             let Some(state) = self.channels.get_mut(&channel_id) else {
                 continue;
             };
             let Some(envelope) = state.queue.pop_front() else {
                 continue;
             };
+            let start = state.virtual_finish.max(self.virtual_time);
+            self.virtual_time = start;
+            state.virtual_finish = start.saturating_add(scheduling_cost(
+                envelope.payload.len(),
+                state.config.priority_hint,
+            ));
             if !state.queue.is_empty() {
                 self.ready.push_back(channel_id);
             }
             self.total_pending -= 1;
             return Some(OutboundFrame::Data(envelope));
         }
-        None
     }
 
     pub fn cancel_channel(&mut self, id: ChannelId) -> Result<usize, LinkError> {
@@ -284,6 +323,22 @@ impl Multiplexer {
 
     pub fn pending_frames(&self) -> usize {
         self.total_pending
+    }
+
+    /// Reports retained queue storage without walking or cloning queued payloads.
+    /// This is intended for bounded-resource telemetry and release benchmarks.
+    pub fn storage_snapshot(&self) -> MultiplexerStorageSnapshot {
+        MultiplexerStorageSnapshot {
+            channel_count: self.channels.len(),
+            pending_frames: self.total_pending,
+            control_queue_slots: self.control.capacity(),
+            ready_queue_slots: self.ready.capacity(),
+            data_queue_slots: self
+                .channels
+                .values()
+                .map(|state| state.queue.capacity())
+                .sum(),
+        }
     }
 
     pub fn discard_all(&mut self) -> usize {
@@ -326,6 +381,17 @@ impl Multiplexer {
     }
 }
 
+const PRIORITY_BANDS: u8 = 8;
+
+fn scheduling_cost(payload_len: usize, priority_hint: u8) -> u128 {
+    let bytes = u128::try_from(payload_len.max(1)).expect("usize always fits into u128");
+    let band_width = u8::MAX.div_ceil(PRIORITY_BANDS);
+    let weight = u128::from(priority_hint / band_width + 1);
+    bytes
+        .saturating_mul(u128::from(PRIORITY_BANDS))
+        .div_ceil(weight)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +406,18 @@ mod tests {
             mode: ChannelMode::Stream,
             priority_hint: 0,
             capacity,
+        }
+    }
+
+    fn prioritized_channel(
+        id: u32,
+        namespace: &str,
+        capacity: usize,
+        priority_hint: u8,
+    ) -> ChannelConfig {
+        ChannelConfig {
+            priority_hint,
+            ..channel(id, namespace, capacity)
         }
     }
 
@@ -397,6 +475,72 @@ mod tests {
             mux.channels_for("mutsuki.distributed", ProtocolVersion::new(1, 0))
                 .collect::<Vec<_>>(),
             vec![ChannelId(2)]
+        );
+    }
+
+    #[test]
+    fn priority_hint_changes_data_share_without_starving_low_priority() {
+        let mut mux = Multiplexer::new(MultiplexerLimits::default()).unwrap();
+        let low = prioritized_channel(1, "example.low", 64, 0);
+        let high = prioritized_channel(2, "example.high", 64, u8::MAX);
+        mux.open_channel(low.clone()).unwrap();
+        mux.open_channel(high.clone()).unwrap();
+        for sequence in 0..64 {
+            let mut low_frame = envelope(&low, &[1; 64]);
+            low_frame.sequence = sequence;
+            mux.enqueue(low_frame).unwrap();
+            let mut high_frame = envelope(&high, &[2; 64]);
+            high_frame.sequence = sequence;
+            mux.enqueue(high_frame).unwrap();
+        }
+
+        let mut low_count = 0;
+        let mut high_count = 0;
+        for _ in 0..18 {
+            match mux.next_outbound().unwrap() {
+                OutboundFrame::Data(frame) if frame.channel.id == low.key.id => low_count += 1,
+                OutboundFrame::Data(frame) if frame.channel.id == high.key.id => high_count += 1,
+                frame => panic!("unexpected frame: {frame:?}"),
+            }
+        }
+        assert_eq!(low_count, 2);
+        assert_eq!(high_count, 16);
+    }
+
+    #[test]
+    fn weighted_fair_scheduler_accounts_for_payload_bytes() {
+        let mut mux = Multiplexer::new(MultiplexerLimits::default()).unwrap();
+        let low = prioritized_channel(1, "example.low", 8, 0);
+        let high = prioritized_channel(2, "example.high", 8, u8::MAX);
+        mux.open_channel(low.clone()).unwrap();
+        mux.open_channel(high.clone()).unwrap();
+        for sequence in 0..8 {
+            let mut low_frame = envelope(&low, &[1; 64]);
+            low_frame.sequence = sequence;
+            mux.enqueue(low_frame).unwrap();
+            let mut high_frame = envelope(&high, &[2; 512]);
+            high_frame.sequence = sequence;
+            mux.enqueue(high_frame).unwrap();
+        }
+
+        let channels = (0..8)
+            .map(|_| match mux.next_outbound().unwrap() {
+                OutboundFrame::Data(frame) => frame.channel.id,
+                OutboundFrame::Control(frame) => panic!("unexpected control frame: {frame:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            channels,
+            vec![
+                low.key.id,
+                high.key.id,
+                low.key.id,
+                high.key.id,
+                low.key.id,
+                high.key.id,
+                low.key.id,
+                high.key.id,
+            ]
         );
     }
 }

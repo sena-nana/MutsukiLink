@@ -1,0 +1,108 @@
+{
+  "schema": "mutsuki-link-release-baseline/2.0.0",
+  "smoke_only": true,
+  "claim_boundary": "Local loopback transport smoke only; not LAN, Wi-Fi, or production latency",
+  "operating_system": "macos",
+  "architecture": "aarch64",
+  "logical_cpus": 10,
+  "handshake_us": 47,
+  "idle_tick_ns": 2,
+  "baselines": [
+    {
+      "transport": "local",
+      "connect_us": 145,
+      "rtt_p50_us": 15,
+      "rtt_p95_us": 37,
+      "rtt_p99_us": 63,
+      "saturated_control_p99_us": 46,
+      "throughput": [
+        {
+          "payload_bytes": 1024,
+          "frames": 1024,
+          "bytes_per_second": 446963341
+        },
+        {
+          "payload_bytes": 16384,
+          "frames": 256,
+          "bytes_per_second": 1025885819
+        },
+        {
+          "payload_bytes": 65536,
+          "frames": 64,
+          "bytes_per_second": 1086607253
+        },
+        {
+          "payload_bytes": 1048576,
+          "frames": 8,
+          "bytes_per_second": 131863179
+        }
+      ],
+      "fixed_handle_bytes": 528,
+      "shutdown_us": 14
+    },
+    {
+      "transport": "tcp",
+      "connect_us": 218,
+      "rtt_p50_us": 45,
+      "rtt_p95_us": 73,
+      "rtt_p99_us": 85,
+      "saturated_control_p99_us": 556,
+      "throughput": [
+        {
+          "payload_bytes": 1024,
+          "frames": 1024,
+          "bytes_per_second": 165966445
+        },
+        {
+          "payload_bytes": 16384,
+          "frames": 256,
+          "bytes_per_second": 1153922320
+        },
+        {
+          "payload_bytes": 65536,
+          "frames": 64,
+          "bytes_per_second": 2383127272
+        },
+        {
+          "payload_bytes": 1048576,
+          "frames": 8,
+          "bytes_per_second": 510007782
+        }
+      ],
+      "fixed_handle_bytes": 544,
+      "shutdown_us": 3
+    },
+    {
+      "transport": "quic",
+      "connect_us": 1097,
+      "rtt_p50_us": 46,
+      "rtt_p95_us": 75,
+      "rtt_p99_us": 105,
+      "saturated_control_p99_us": 260,
+      "throughput": [
+        {
+          "payload_bytes": 1024,
+          "frames": 1024,
+          "bytes_per_second": 277547908
+        },
+        {
+          "payload_bytes": 16384,
+          "frames": 256,
+          "bytes_per_second": 349154286
+        },
+        {
+          "payload_bytes": 65536,
+          "frames": 64,
+          "bytes_per_second": 491278881
+        },
+        {
+          "payload_bytes": 1048576,
+          "frames": 8,
+          "bytes_per_second": 488618825
+        }
+      ],
+      "fixed_handle_bytes": 1840,
+      "shutdown_us": 467
+    }
+  ]
+}

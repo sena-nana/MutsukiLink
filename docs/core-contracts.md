@@ -42,9 +42,12 @@ chosen codec. Limits cover frame bytes, declared nesting depth, channels, per-ch
 total queued data, and event subscribers.
 
 Control frames use a separate bounded queue with reserved capacity. Data saturation therefore cannot
-block drain, close, or heartbeat. Data channels enter a round-robin ready queue, so one slow namespace
-does not block another. Session event subscribers are also bounded; a slow subscriber loses oldest
-events and receives an `EventsDropped` count instead of blocking network progress.
+block drain, close, or heartbeat. Data channels use byte-aware weighted-fair scheduling. The public
+`priority_hint` maps to eight bounded weights, so higher-priority data receives a larger share under
+contention while packet size is charged to that share and lower-priority channels cannot be
+permanently starved. An idle channel does not accumulate credit. Session event subscribers are also
+bounded; a slow subscriber loses oldest events and receives an `EventsDropped` count instead of
+blocking network progress.
 
 Discardable telemetry and low-priority events use `enqueue_discardable`. Only event channels may opt
 into this behavior; reliable request/response and stream frames retain explicit backpressure. The

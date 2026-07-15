@@ -12,6 +12,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo metadata --locked --format-version 1
 bash scripts/check-boundaries.sh
 cargo run --release -p mutsuki-link --example release_baseline --features local,tcp,quic
+cargo run --release -p mutsuki-link --example mux_baseline
 cargo package -p mutsuki-link-core
 cargo package -p mutsuki-link --list
 cargo package -p ntp-mutsuki-link --list
@@ -20,13 +21,16 @@ cargo package -p ntp-mutsuki-link --list
 The facade package uses `--list` until its version-matched internal Link crates are published; Cargo
 cannot verify an unpublished dependency from its local archive. The manifest still requires
 versioned internal crates and contains no repository-external paths. After publishing the internal
-crates, replace the list check with a normal `cargo package -p mutsuki-link`. The baseline fails when
-a loopback transport exceeds 5 seconds to connect, control or RTT P99
-exceeds 1 second, throughput falls below 64 KiB/s, or shutdown exceeds 2 seconds. It records local,
-TCP, and QUIC connection latency, Link handshake latency, RTT P50/P95/P99, control P99 while data is
-saturated, throughput, fixed Rust connection-handle size, bounded stream/channel configuration, and
-idle heartbeat evaluation cost. These thresholds detect severe regressions while tolerating shared
-CI runners; compare recorded values between releases before tightening them.
+crates, replace the list check with a normal `cargo package -p mutsuki-link`. The transport baseline
+fails when a loopback transport exceeds 5 seconds to connect, control or RTT P99 exceeds 50 ms, any
+1 KiB/16 KiB/64 KiB/1 MiB case falls below 4 MiB/s, or shutdown exceeds 2 seconds. It uses warm-up
+and 128 RTT samples and emits structured machine/transport JSON. The separate mux baseline covers
+1/16/64 active channels across the same payload sizes, verifies retained queue storage does not grow
+after warm-up, and measures reserved control latency under 64 saturated data channels. Set
+`MUTSUKI_LINK_BASELINE=artifacts/performance/mux-reference-v1-smoke.json` to apply the historical 2x
+relative latency/throughput/fixed-size gate; a 5 us timer-jitter floor avoids turning sub-microsecond
+scheduler noise into CI failures. Both reports are loopback/in-memory smoke-only evidence and do not
+represent LAN or Wi-Fi performance.
 
 CI additionally verifies:
 

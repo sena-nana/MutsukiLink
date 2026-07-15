@@ -30,6 +30,8 @@ tokio = { workspace = true, optional = true }
 quinn.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [[example]]
 name = "manual_server"
@@ -53,6 +55,9 @@ name = "multiplex"
 [[example]]
 name = "release_baseline"
 required-features = ["local", "tcp", "quic"]
+
+[[example]]
+name = "mux_baseline"
 
 [lints]
 workspace = true

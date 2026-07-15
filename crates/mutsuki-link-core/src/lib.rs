@@ -47,7 +47,7 @@ pub use liveness::{
 };
 pub use mux::{
     CONTROL_CHANNEL_ID, ChannelConfig, ChannelId, ChannelKey, ChannelMode, Envelope, EnvelopeFlags,
-    Multiplexer, MultiplexerLimits, OutboundFrame, QueueAdmission,
+    Multiplexer, MultiplexerLimits, MultiplexerStorageSnapshot, OutboundFrame, QueueAdmission,
 };
 pub use protocol::{
     ActiveProtocolSet, ChannelOpenRequest, FrozenProtocolRegistry, ProtocolChannel,
