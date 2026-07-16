@@ -42,11 +42,12 @@ Sessions progress through `Connecting`, `Handshaking`, `Established`, `Draining`
 `Closed` or `Failed` state. `begin_drain` stops the lifecycle from returning to established;
 `finish_drain` requires all queued frames to be sent. `abort` discards them immediately.
 
-Every legacy data channel key includes protocol namespace, version, and numeric id; the compact
-envelope migration consumes the typed session-local mapping instead. Request-response, event,
-and stream modes share only the generic envelope; payload bytes are owned by the upper protocol's
-chosen codec. Limits cover frame bytes, declared nesting depth, channels, per-channel queue capacity,
-total queued data, and event subscribers.
+The data envelope carries only current Session ID, session-local Channel ID/generation, sequence,
+flags, nesting depth, length, and opaque payload. Protocol identity and descriptor validation happen
+once during typed channel open. Closed IDs are not reused within a Session; reconnect creates an
+empty mapping under a new Session ID. The exact wire and compatibility rules are in
+[Compact session-local data frames](compact-data.md). Limits cover frame bytes, declared nesting
+depth, channels, per-channel queue capacity, total queued data, and event subscribers.
 
 Control frames use a separate bounded queue with reserved capacity. Data saturation therefore cannot
 block drain, close, or heartbeat. Data channels use byte-aware weighted-fair scheduling. The public

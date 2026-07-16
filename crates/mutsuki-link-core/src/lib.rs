@@ -17,6 +17,7 @@
 
 mod budget;
 mod control;
+mod data;
 mod error;
 mod handshake;
 mod identity;
@@ -39,8 +40,14 @@ pub use control::{
     MAX_CONTROL_PAYLOAD_BYTES, MAX_CONTROL_PROTOCOLS, MAX_PROTOCOL_CAPABILITY_WORDS,
     MAX_SESSION_CHANNEL_MAPPINGS, OpenChannel, Ping, Pong, ProtocolCapabilitySet,
     ProtocolChannelId, ProtocolDebugIdentity, ProtocolStableId, RequestId, Retryability,
-    SchemaFingerprint, SchemaId, SchemaRef, SchemaRevision, SessionChannelMap,
-    TYPED_CONTROL_WIRE_VERSION, decode_control_envelope, encode_control_envelope,
+    SchemaFingerprint, SchemaId, SchemaRef, SchemaRevision, SessionChannelBinding,
+    SessionChannelMap, TYPED_CONTROL_WIRE_VERSION, decode_control_envelope,
+    encode_control_envelope,
+};
+pub use data::{
+    BorrowedDataEnvelope, COMPACT_DATA_HEADER_BYTES, COMPACT_DATA_WIRE_VERSION, DataCodecError,
+    DataCodecErrorKind, DataCodecLimits, DataIdentityMode, DataModeGuard, decode_data_envelope,
+    encode_data_envelope, encode_data_envelope_into,
 };
 pub use error::{HandshakeError, HandshakeErrorKind, LimitKind, LinkError};
 pub use handshake::{
@@ -57,8 +64,9 @@ pub use liveness::{
     QualityChangeThreshold, QualityObservation,
 };
 pub use mux::{
-    CONTROL_CHANNEL_ID, ChannelConfig, ChannelId, ChannelKey, ChannelMode, Envelope, EnvelopeFlags,
-    Multiplexer, MultiplexerLimits, MultiplexerStorageSnapshot, OutboundFrame, QueueAdmission,
+    CONTROL_CHANNEL_ID, ChannelConfig, ChannelGeneration, ChannelId, ChannelKey, ChannelMode,
+    DataEnvelope, Envelope, EnvelopeFlags, Multiplexer, MultiplexerLimits,
+    MultiplexerStorageSnapshot, OutboundFrame, QueueAdmission,
 };
 pub use protocol::{
     ActiveProtocolSet, ChannelOpenRequest, FrozenProtocolRegistry, ProtocolChannel,
@@ -90,8 +98,8 @@ pub use selection::{
     TransportCandidate, TransportKind, TransportSelection,
 };
 pub use session::{
-    CloseReason, EventSubscriberId, Session, SessionEvent, SessionEventBus, SessionInfo,
-    SessionState,
+    CloseReason, EventSubscriberId, Session, SessionChannelOpenError, SessionDataPlane,
+    SessionEvent, SessionEventBus, SessionInfo, SessionState,
 };
 pub use transport::{
     CancellationToken, ConnectContext, Connection, ConnectionMetadata, ControlStream,

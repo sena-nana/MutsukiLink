@@ -1,7 +1,9 @@
 use crate::{
-    AcceptChannel, ConnectionQuality, ControlModeGuard, LimitKind, LinkControlError,
-    LinkControlOpcode, LinkError, MAX_SESSION_CHANNEL_MAPPINGS, Multiplexer, MultiplexerLimits,
-    NegotiatedSession, PeerId, ProtocolSelection, SessionChannelMap, SessionContinuity, SessionId,
+    ConnectionQuality, ControlModeGuard, DataIdentityMode, DataModeGuard, LimitKind,
+    LinkControlError, LinkControlOpcode, LinkError, MAX_SESSION_CHANNEL_MAPPINGS, Multiplexer,
+    MultiplexerLimits, MultiplexerStorageSnapshot, NegotiatedSession, OutboundFrame, PeerId,
+    ProtocolSelection, QueueAdmission, SessionChannelBinding, SessionChannelMap, SessionContinuity,
+    SessionId, ValidatedChannel,
 };
 use std::collections::{BTreeMap, VecDeque};
 
@@ -133,6 +135,7 @@ pub struct Session {
     events: SessionEventBus,
     multiplexer: Multiplexer,
     control_mode: ControlModeGuard,
+    data_mode: DataModeGuard,
     channel_mappings: SessionChannelMap,
 }
 
@@ -143,10 +146,14 @@ impl Session {
         max_event_subscribers: usize,
     ) -> Result<Self, LinkError> {
         let control_mode = negotiated.control_mode_guard();
+        let data_mode = DataModeGuard::new(DataIdentityMode::negotiate(
+            control_mode.mode(),
+            negotiated.link_capabilities,
+        ));
         let allowed_protocols = negotiated
             .protocols
             .iter()
-            .map(|protocol| (protocol.stable_id.wire_namespace(), protocol.version))
+            .map(|protocol| (protocol.stable_id, protocol.version))
             .collect::<Vec<_>>();
         Ok(Self {
             state: SessionState::Established,
@@ -159,8 +166,13 @@ impl Session {
                 close_reason: None,
             },
             events: SessionEventBus::new(max_event_subscribers)?,
-            multiplexer: Multiplexer::restricted(mux_limits, allowed_protocols)?,
+            multiplexer: Multiplexer::restricted(
+                negotiated.session_id,
+                mux_limits,
+                allowed_protocols,
+            )?,
             control_mode,
+            data_mode,
             channel_mappings: SessionChannelMap::new(MAX_SESSION_CHANNEL_MAPPINGS).map_err(
                 |_| LinkError::InvalidInput("session channel mapping limits are invalid"),
             )?,
@@ -179,42 +191,109 @@ impl Session {
         &mut self.events
     }
 
-    pub fn multiplexer(&mut self) -> &mut Multiplexer {
-        &mut self.multiplexer
+    pub fn data_plane(&mut self) -> SessionDataPlane<'_> {
+        SessionDataPlane {
+            state: self.state,
+            multiplexer: &mut self.multiplexer,
+        }
     }
 
     pub const fn control_mode(&self) -> ControlModeGuard {
         self.control_mode
     }
 
-    pub fn accept_channel_mapping(
+    pub const fn data_mode(&self) -> DataModeGuard {
+        self.data_mode
+    }
+
+    pub fn open_validated_channel(
         &mut self,
-        accepted: AcceptChannel,
-    ) -> Result<(), LinkControlError> {
+        validated: &ValidatedChannel,
+    ) -> Result<SessionChannelBinding, SessionChannelOpenError> {
         if !matches!(
             self.state,
             SessionState::Established | SessionState::Draining
         ) {
-            return Err(LinkControlError::session_not_active(
-                LinkControlOpcode::ChannelAccepted,
+            return Err(SessionChannelOpenError::Control(
+                LinkControlError::session_not_active(LinkControlOpcode::OpenChannel),
             ));
         }
-        self.control_mode.validate_typed()?;
-        if !self
-            .info
-            .protocols
-            .iter()
-            .any(|protocol| protocol.stable_id == accepted.protocol_id)
-        {
-            return Err(LinkControlError {
+        self.control_mode
+            .validate_typed()
+            .map_err(SessionChannelOpenError::Control)?;
+        self.data_mode
+            .validate_compact()
+            .map_err(SessionChannelOpenError::DataMode)?;
+        let accepted = validated.accepted_mapping();
+        if !self.validated_channel_matches_session(validated) {
+            return Err(SessionChannelOpenError::Control(LinkControlError {
                 domain: crate::ErrorDomain::Security,
-                code: crate::ErrorCode(1),
-                operation: Some(LinkControlOpcode::ChannelAccepted),
+                code: crate::ErrorCode(2),
+                operation: Some(LinkControlOpcode::OpenChannel),
                 retryability: crate::Retryability::Never,
-                public_message: "channel mapping references an unnegotiated protocol",
-            });
+                public_message: "channel descriptor is not bound to this negotiated session",
+            }));
         }
-        self.channel_mappings.bind(accepted)
+        self.channel_mappings
+            .validate_bind(accepted)
+            .map_err(SessionChannelOpenError::Control)?;
+        self.multiplexer
+            .open_channel(validated.config.clone())
+            .map_err(SessionChannelOpenError::Multiplexer)?;
+        Ok(self.channel_mappings.bind_validated(accepted))
+    }
+
+    /// Compatibility boundary for an owner-provided legacy full-key codec.
+    /// The descriptor is still registry-validated, but no compact mapping is
+    /// installed and the compact wire codec remains disabled for this Session.
+    pub fn open_legacy_validated_channel(
+        &mut self,
+        validated: &ValidatedChannel,
+    ) -> Result<(), SessionChannelOpenError> {
+        if !matches!(
+            self.state,
+            SessionState::Established | SessionState::Draining
+        ) {
+            return Err(SessionChannelOpenError::Control(
+                LinkControlError::session_not_active(LinkControlOpcode::OpenChannel),
+            ));
+        }
+        self.data_mode
+            .validate_legacy()
+            .map_err(SessionChannelOpenError::DataMode)?;
+        if !self.validated_channel_matches_session(validated) {
+            return Err(SessionChannelOpenError::Control(LinkControlError {
+                domain: crate::ErrorDomain::Security,
+                code: crate::ErrorCode(2),
+                operation: Some(LinkControlOpcode::OpenChannel),
+                retryability: crate::Retryability::Never,
+                public_message: "legacy channel descriptor is not bound to this session",
+            }));
+        }
+        self.multiplexer
+            .open_channel(validated.config.clone())
+            .map_err(SessionChannelOpenError::Multiplexer)
+    }
+
+    pub fn close_channel(&mut self, channel_id: crate::ChannelId) -> Result<usize, LinkError> {
+        let discarded = self.multiplexer.close_channel(channel_id)?;
+        self.channel_mappings.unbind(channel_id);
+        Ok(discarded)
+    }
+
+    fn validated_channel_matches_session(&self, validated: &ValidatedChannel) -> bool {
+        validated.config.key.protocol_id == validated.protocol_id
+            && validated.config.key.protocol_channel_id == validated.protocol_channel_id
+            && validated.config.generation == crate::ChannelGeneration::INITIAL
+            && validated.config.max_frame_bytes == validated.max_frame_bytes
+            && validated.config.max_stream_bytes == validated.max_stream_bytes
+            && validated.config.discardable == validated.discardable
+            && self.info.protocols.iter().any(|protocol| {
+                protocol.stable_id == validated.protocol_id
+                    && protocol.version == validated.config.key.version
+                    && protocol.schema == validated.schema
+                    && protocol.capabilities == validated.capabilities
+            })
     }
 
     pub fn channel_mappings(&self) -> &SessionChannelMap {
@@ -293,6 +372,78 @@ impl Session {
     }
 }
 
+#[derive(Debug)]
+pub enum SessionChannelOpenError {
+    Control(LinkControlError),
+    DataMode(crate::DataCodecError),
+    Multiplexer(LinkError),
+}
+
+impl std::fmt::Display for SessionChannelOpenError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Control(error) => error.fmt(formatter),
+            Self::DataMode(error) => error.fmt(formatter),
+            Self::Multiplexer(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for SessionChannelOpenError {}
+
+pub struct SessionDataPlane<'a> {
+    state: SessionState,
+    multiplexer: &'a mut Multiplexer,
+}
+
+impl SessionDataPlane<'_> {
+    pub fn enqueue(&mut self, envelope: crate::Envelope) -> Result<(), LinkError> {
+        self.ensure_active()?;
+        self.multiplexer.enqueue(envelope)
+    }
+
+    pub fn enqueue_discardable(
+        &mut self,
+        envelope: crate::Envelope,
+    ) -> Result<QueueAdmission, LinkError> {
+        self.ensure_active()?;
+        self.multiplexer.enqueue_discardable(envelope)
+    }
+
+    pub fn enqueue_control(&mut self, payload: Vec<u8>) -> Result<(), LinkError> {
+        self.ensure_active()?;
+        self.multiplexer.enqueue_control(payload)
+    }
+
+    pub fn next_outbound(&mut self) -> Option<OutboundFrame> {
+        self.multiplexer.next_outbound()
+    }
+
+    pub fn cancel_channel(&mut self, channel_id: crate::ChannelId) -> Result<usize, LinkError> {
+        self.ensure_active()?;
+        self.multiplexer.cancel_channel(channel_id)
+    }
+
+    pub fn pending_frames(&self) -> usize {
+        self.multiplexer.pending_frames()
+    }
+
+    pub fn storage_snapshot(&self) -> MultiplexerStorageSnapshot {
+        self.multiplexer.storage_snapshot()
+    }
+
+    fn ensure_active(&self) -> Result<(), LinkError> {
+        if matches!(
+            self.state,
+            SessionState::Established | SessionState::Draining
+        ) {
+            Ok(())
+        } else {
+            Err(LinkError::Closed)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,7 +466,8 @@ mod tests {
                 connection_id: ConnectionId::from_bytes([2; 16]),
             },
             link_version: ProtocolVersion::new(1, 0),
-            link_capabilities: LinkCapabilities::TYPED_CONTROL,
+            link_capabilities: LinkCapabilities::TYPED_CONTROL
+                | LinkCapabilities::COMPACT_CHANNEL_ID,
             protocols: vec![{
                 let identity = ProtocolDebugIdentity::new("local", "test");
                 let stable_id = identity.stable_id();
@@ -327,6 +479,35 @@ mod tests {
                 }
             }],
             auth_path: AuthPath::FirstPairing,
+        }
+    }
+
+    fn validated(selection: &ProtocolSelection, channel_id: u32) -> ValidatedChannel {
+        let protocol_id = selection.stable_id;
+        ValidatedChannel {
+            config: crate::ChannelConfig {
+                key: crate::ChannelKey {
+                    protocol_id,
+                    version: selection.version,
+                    protocol_channel_id: crate::ProtocolChannelId(1),
+                },
+                id: crate::ChannelId(channel_id),
+                generation: crate::ChannelGeneration::INITIAL,
+                mode: crate::ChannelMode::Event,
+                priority_hint: 10,
+                capacity: 2,
+                max_frame_bytes: 1024,
+                max_stream_bytes: None,
+                discardable: true,
+            },
+            protocol_id,
+            protocol_channel_id: crate::ProtocolChannelId(1),
+            schema: selection.schema,
+            capabilities: selection.capabilities.clone(),
+            debug_name: Some("event".to_owned()),
+            max_frame_bytes: 1024,
+            max_stream_bytes: None,
+            discardable: true,
         }
     }
 
@@ -363,55 +544,118 @@ mod tests {
             Session::established(negotiated(), MultiplexerLimits::default(), 2).unwrap();
         aborted.abort();
         assert_eq!(aborted.info().close_reason, Some(CloseReason::LocalAbort));
+        assert_eq!(
+            aborted
+                .data_plane()
+                .enqueue(crate::Envelope {
+                    session_id: SessionId::from_bytes([3; 16]),
+                    channel_id: crate::ChannelId(1),
+                    generation: crate::ChannelGeneration::INITIAL,
+                    sequence: 1,
+                    nesting_depth: 0,
+                    flags: crate::EnvelopeFlags::default(),
+                    payload: vec![],
+                })
+                .unwrap_err(),
+            LinkError::Closed
+        );
     }
 
     #[test]
     fn session_rejects_channels_outside_negotiated_protocols() {
         let mut session =
             Session::established(negotiated(), MultiplexerLimits::default(), 1).unwrap();
+        let protocol_id = crate::ProtocolStableId::derive("sensitive", "unadvertised");
+        let schema = crate::SchemaRef::for_contract("sensitive", "unadvertised", 1, b"test");
+        let config = crate::ChannelConfig {
+            key: crate::ChannelKey {
+                protocol_id,
+                version: ProtocolVersion::new(1, 0),
+                protocol_channel_id: crate::ProtocolChannelId(1),
+            },
+            id: crate::ChannelId(1),
+            generation: crate::ChannelGeneration::INITIAL,
+            mode: crate::ChannelMode::Event,
+            priority_hint: 0,
+            capacity: 1,
+            max_frame_bytes: 1024,
+            max_stream_bytes: None,
+            discardable: false,
+        };
         let error = session
-            .multiplexer()
-            .open_channel(crate::ChannelConfig {
-                key: crate::ChannelKey {
-                    namespace: "sensitive.unadvertised".to_owned(),
-                    version: ProtocolVersion::new(1, 0),
-                    id: crate::ChannelId(1),
-                },
-                mode: crate::ChannelMode::Event,
-                priority_hint: 0,
-                capacity: 1,
+            .open_validated_channel(&ValidatedChannel {
+                config,
+                protocol_id,
+                protocol_channel_id: crate::ProtocolChannelId(1),
+                schema,
+                capabilities: crate::ProtocolCapabilitySet::empty(protocol_id),
+                debug_name: None,
+                max_frame_bytes: 1024,
+                max_stream_bytes: None,
+                discardable: false,
             })
             .unwrap_err();
-        assert_eq!(error, LinkError::NamespaceConflict);
+        assert!(matches!(error, SessionChannelOpenError::Control(_)));
     }
 
     #[test]
     fn authenticated_session_owns_typed_channel_mapping() {
         let negotiated = negotiated();
-        let protocol_id = negotiated.protocols[0].stable_id;
+        let selection = negotiated.protocols[0].clone();
+        let protocol_id = selection.stable_id;
         let mut session =
             Session::established(negotiated, MultiplexerLimits::default(), 1).unwrap();
-        session
-            .accept_channel_mapping(AcceptChannel {
-                protocol_id,
-                protocol_channel_id: crate::ProtocolChannelId(1),
-                session_channel_id: crate::ChannelId(7),
-            })
-            .unwrap();
+        let validated = validated(&selection, 7);
+        let binding = session.open_validated_channel(&validated).unwrap();
+        assert_eq!(binding.generation, crate::ChannelGeneration::INITIAL);
         assert_eq!(
             session
                 .channel_mappings()
                 .session_channel(protocol_id, crate::ProtocolChannelId(1)),
             Some(crate::ChannelId(7))
         );
-        session.abort();
+        session.close_channel(crate::ChannelId(7)).unwrap();
+        let error = session.open_validated_channel(&validated).unwrap_err();
+        assert!(matches!(error, SessionChannelOpenError::Control(_)));
+    }
+
+    #[test]
+    fn legacy_session_uses_explicit_adapter_and_never_installs_compact_mapping() {
+        let mut negotiated = negotiated();
+        negotiated.link_capabilities = LinkCapabilities::default();
+        let selection = negotiated.protocols[0].clone();
+        let validated = validated(&selection, 5);
+        let mut session =
+            Session::established(negotiated, MultiplexerLimits::default(), 1).unwrap();
+        assert_eq!(
+            session.data_mode().mode(),
+            DataIdentityMode::LegacyFullChannelKey
+        );
+        session.open_legacy_validated_channel(&validated).unwrap();
+        assert!(session.channel_mappings().is_empty());
+        let error = session.open_validated_channel(&validated).unwrap_err();
+        assert!(matches!(error, SessionChannelOpenError::Control(_)));
+    }
+
+    #[test]
+    fn new_session_starts_empty_and_rejects_previous_session_frame() {
+        let previous_session_id = negotiated().session_id;
+        let mut next = negotiated();
+        next.session_id = SessionId::from_bytes([4; 16]);
+        let mut session = Session::established(next, MultiplexerLimits::default(), 1).unwrap();
+        assert!(session.channel_mappings().is_empty());
         let error = session
-            .accept_channel_mapping(AcceptChannel {
-                protocol_id,
-                protocol_channel_id: crate::ProtocolChannelId(2),
-                session_channel_id: crate::ChannelId(8),
+            .data_plane()
+            .enqueue(crate::Envelope {
+                session_id: previous_session_id,
+                channel_id: crate::ChannelId(7),
+                generation: crate::ChannelGeneration::INITIAL,
+                sequence: 1,
+                nesting_depth: 0,
+                flags: crate::EnvelopeFlags::default(),
+                payload: vec![1],
             })
             .unwrap_err();
-        assert_eq!(error.code, crate::ErrorCode(9));
+        assert_eq!(error, LinkError::SessionMismatch);
     }
 }

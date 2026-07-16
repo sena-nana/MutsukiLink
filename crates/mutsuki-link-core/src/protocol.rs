@@ -1,7 +1,7 @@
 use crate::{
-    ChannelConfig, ChannelId, ChannelKey, ChannelMode, ProtocolCapabilitySet, ProtocolChannelId,
-    ProtocolDebugIdentity, ProtocolOffer, ProtocolSelection, ProtocolStableId, ProtocolVersion,
-    SchemaRef, VersionRange,
+    ChannelConfig, ChannelGeneration, ChannelId, ChannelKey, ChannelMode, ProtocolCapabilitySet,
+    ProtocolChannelId, ProtocolDebugIdentity, ProtocolOffer, ProtocolSelection, ProtocolStableId,
+    ProtocolVersion, SchemaRef, VersionRange,
 };
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
@@ -309,12 +309,23 @@ impl FrozenProtocolRegistry {
         }
         let mut active = BTreeMap::new();
         for selection in negotiated {
+            if active.contains_key(&selection.stable_id) {
+                return Err(error(ProtocolRegistryErrorKind::DuplicateProtocol));
+            }
             let descriptor = self
                 .descriptors
                 .get(&selection.stable_id)
                 .ok_or_else(|| error(ProtocolRegistryErrorKind::UnknownProtocol))?;
             if descriptor.schema != selection.schema {
                 return Err(error(ProtocolRegistryErrorKind::SchemaConflict));
+            }
+            if selection.capabilities.protocol_id != selection.stable_id
+                || !selection.capabilities.is_bounded()
+                || !selection
+                    .capabilities
+                    .is_subset_of(&descriptor.capabilities)
+            {
+                return Err(error(ProtocolRegistryErrorKind::InvalidCapabilities));
             }
             if descriptor
                 .versions
@@ -398,13 +409,18 @@ impl ActiveProtocolSet {
         Ok(ValidatedChannel {
             config: ChannelConfig {
                 key: ChannelKey {
-                    namespace: stable_namespace(protocol.stable_id),
+                    protocol_id: protocol.stable_id,
                     version: protocol.version,
-                    id: request.channel_id,
+                    protocol_channel_id: channel.id,
                 },
+                id: request.channel_id,
+                generation: ChannelGeneration::INITIAL,
                 mode: channel.mode,
                 priority_hint: channel.priority,
                 capacity: request.capacity,
+                max_frame_bytes: channel.max_frame_bytes,
+                max_stream_bytes: channel.max_stream_bytes,
+                discardable: channel.discardable,
             },
             protocol_id: protocol.stable_id,
             protocol_channel_id: channel.id,
@@ -439,23 +455,59 @@ impl From<crate::OpenChannel> for ChannelOpenRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedChannel {
-    pub config: ChannelConfig,
-    pub protocol_id: ProtocolStableId,
-    pub protocol_channel_id: ProtocolChannelId,
-    pub schema: SchemaRef,
-    pub capabilities: ProtocolCapabilitySet,
-    pub debug_name: Option<String>,
-    pub max_frame_bytes: usize,
-    pub max_stream_bytes: Option<u64>,
-    pub discardable: bool,
+    pub(crate) config: ChannelConfig,
+    pub(crate) protocol_id: ProtocolStableId,
+    pub(crate) protocol_channel_id: ProtocolChannelId,
+    pub(crate) schema: SchemaRef,
+    pub(crate) capabilities: ProtocolCapabilitySet,
+    pub(crate) debug_name: Option<String>,
+    pub(crate) max_frame_bytes: usize,
+    pub(crate) max_stream_bytes: Option<u64>,
+    pub(crate) discardable: bool,
 }
 
 impl ValidatedChannel {
+    pub const fn config(&self) -> &ChannelConfig {
+        &self.config
+    }
+
+    pub const fn protocol_id(&self) -> ProtocolStableId {
+        self.protocol_id
+    }
+
+    pub const fn protocol_channel_id(&self) -> ProtocolChannelId {
+        self.protocol_channel_id
+    }
+
+    pub const fn schema(&self) -> SchemaRef {
+        self.schema
+    }
+
+    pub fn capabilities(&self) -> &ProtocolCapabilitySet {
+        &self.capabilities
+    }
+
+    pub fn debug_name(&self) -> Option<&str> {
+        self.debug_name.as_deref()
+    }
+
+    pub const fn max_frame_bytes(&self) -> usize {
+        self.max_frame_bytes
+    }
+
+    pub const fn max_stream_bytes(&self) -> Option<u64> {
+        self.max_stream_bytes
+    }
+
+    pub const fn discardable(&self) -> bool {
+        self.discardable
+    }
+
     pub const fn accepted_mapping(&self) -> crate::AcceptChannel {
         crate::AcceptChannel {
             protocol_id: self.protocol_id,
             protocol_channel_id: self.protocol_channel_id,
-            session_channel_id: self.config.key.id,
+            session_channel_id: self.config.id,
         }
     }
 
@@ -477,10 +529,6 @@ impl ValidatedChannel {
         }
         Ok(())
     }
-}
-
-fn stable_namespace(id: ProtocolStableId) -> String {
-    id.wire_namespace()
 }
 
 fn valid_protocol_id(value: &str) -> bool {

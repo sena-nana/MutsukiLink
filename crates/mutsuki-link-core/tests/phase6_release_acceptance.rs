@@ -197,7 +197,10 @@ fn unknown_protocol_channel_and_malformed_envelopes_are_isolated() {
         ProtocolRegistryErrorKind::UnknownProtocol
     );
 
+    let session_id = SessionId::from_bytes([1; 16]);
+    let protocol_id = release_offer().stable_id;
     let mut mux = Multiplexer::restricted(
+        session_id,
         MultiplexerLimits {
             max_frame_bytes: 8,
             max_nesting_depth: 2,
@@ -205,23 +208,29 @@ fn unknown_protocol_channel_and_malformed_envelopes_are_isolated() {
             control_queue_capacity: 1,
             max_total_pending_frames: 1,
         },
-        [("example.release".to_owned(), version(1, 1))],
+        [(protocol_id, version(1, 1))],
     )
     .unwrap();
     let config = ChannelConfig {
         key: ChannelKey {
-            namespace: "example.release".to_owned(),
+            protocol_id,
             version: version(1, 1),
-            id: ChannelId(1),
+            protocol_channel_id: ProtocolChannelId(1),
         },
+        id: ChannelId(1),
+        generation: ChannelGeneration::INITIAL,
         mode: ChannelMode::RequestResponse,
         priority_hint: 0,
         capacity: 1,
+        max_frame_bytes: 8,
+        max_stream_bytes: None,
+        discardable: false,
     };
     mux.open_channel(config.clone()).unwrap();
     let malformed = |sequence, nesting_depth, payload: Vec<u8>| Envelope {
-        session_id: SessionId::from_bytes([1; 16]),
-        channel: config.key.clone(),
+        session_id,
+        channel_id: config.id,
+        generation: config.generation,
         sequence,
         nesting_depth,
         flags: EnvelopeFlags::default(),

@@ -40,16 +40,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The payload remains opaque to Link. A real example adapter would encode
     // and decode it using the `example.echo` protocol crate.
     channel.validate_payload(b"hello".len(), None)?;
+    let session_id = SessionId::from_bytes([1; 16]);
     let mut mux = Multiplexer::restricted(
+        session_id,
         MultiplexerLimits::default(),
         negotiated
             .iter()
-            .map(|selection| (selection.stable_id.wire_namespace(), selection.version)),
+            .map(|selection| (selection.stable_id, selection.version)),
     )?;
-    mux.open_channel(channel.config.clone())?;
+    mux.open_channel(channel.config().clone())?;
     mux.enqueue(Envelope {
-        session_id: SessionId::from_bytes([1; 16]),
-        channel: channel.config.key.clone(),
+        session_id,
+        channel_id: channel.config().id,
+        generation: channel.config().generation,
         sequence: 1,
         nesting_depth: 0,
         flags: EnvelopeFlags::default(),
@@ -70,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let echoed = client.try_receive()?.expect("client receives response");
     println!(
         "open {:?} and echo {} opaque bytes",
-        channel.config.key,
+        channel.config().key,
         echoed.len()
     );
     Ok(())

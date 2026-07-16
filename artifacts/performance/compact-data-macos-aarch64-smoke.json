@@ -1,0 +1,55 @@
+{
+  "schema": "mutsuki-link-compact-data-baseline/1.0.0",
+  "smoke_only": true,
+  "claim_boundary": "Synthetic local codec smoke only; not LAN, Wi-Fi, NanaTracking quality, or production latency",
+  "operating_system": "macos",
+  "architecture": "aarch64",
+  "compact_header_bytes": 47,
+  "legacy_reference_model": "Minimum old field set with 2-byte identity length; excludes serializer framing and allocator overhead",
+  "legacy_identity_matrix": [
+    {
+      "identity_length": 8,
+      "modeled_minimum_header_bytes": 51,
+      "compact_header_savings_bytes": 4
+    },
+    {
+      "identity_length": 32,
+      "modeled_minimum_header_bytes": 75,
+      "compact_header_savings_bytes": 28
+    },
+    {
+      "identity_length": 128,
+      "modeled_minimum_header_bytes": 171,
+      "compact_header_savings_bytes": 124
+    }
+  ],
+  "codec_matrix": [
+    {
+      "payload_bytes": 64,
+      "encoded_bytes": 111,
+      "roundtrips_per_second": 40439712,
+      "equivalent_60_fps_streams": 673995,
+      "equivalent_120_fps_streams": 336997,
+      "steady_encode_buffer_growth_events": 0,
+      "borrowed_decode_payload_copies": 0
+    },
+    {
+      "payload_bytes": 256,
+      "encoded_bytes": 303,
+      "roundtrips_per_second": 31559018,
+      "equivalent_60_fps_streams": 525983,
+      "equivalent_120_fps_streams": 262991,
+      "steady_encode_buffer_growth_events": 0,
+      "borrowed_decode_payload_copies": 0
+    },
+    {
+      "payload_bytes": 1024,
+      "encoded_bytes": 1071,
+      "roundtrips_per_second": 27067382,
+      "equivalent_60_fps_streams": 451123,
+      "equivalent_120_fps_streams": 225561,
+      "steady_encode_buffer_growth_events": 0,
+      "borrowed_decode_payload_copies": 0
+    }
+  ]
+}

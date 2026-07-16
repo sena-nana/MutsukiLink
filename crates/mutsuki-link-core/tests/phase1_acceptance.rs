@@ -92,10 +92,45 @@ fn established(outputs: &[HandshakeOutput]) -> NegotiatedSession {
         .unwrap()
 }
 
+fn protocol_registry(offers: &[ProtocolOffer]) -> FrozenProtocolRegistry {
+    let mut registry = ProtocolRegistry::new(ProtocolRegistryLimits::default()).unwrap();
+    for offer in offers {
+        let is_event = offer
+            .debug_identity
+            .as_ref()
+            .is_some_and(|identity| identity.name == "lilia");
+        registry
+            .register(ProtocolDescriptor {
+                stable_id: offer.stable_id,
+                debug_identity: offer.debug_identity.clone(),
+                versions: offer.versions,
+                schema: offer.schema,
+                capabilities: offer.capabilities.clone(),
+                channels: vec![ProtocolChannelDescriptor {
+                    id: ProtocolChannelId(1),
+                    debug_name: None,
+                    mode: if is_event {
+                        ChannelMode::Event
+                    } else {
+                        ChannelMode::RequestResponse
+                    },
+                    priority: if is_event { 1 } else { 10 },
+                    max_frame_bytes: 16,
+                    max_stream_bytes: None,
+                    max_in_flight_frames: 1,
+                    discardable: is_event,
+                }],
+            })
+            .unwrap();
+    }
+    registry.freeze()
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn in_memory_transport_covers_handshake_mux_flow_control_drain_and_abort() {
     let offers = vec![offer("mutsuki.lilia"), offer("mutsuki.distributed")];
+    let registry = protocol_registry(&offers);
     let mut initiator = HandshakeMachine::initiator(config(1, 0, offers.clone()));
     let mut responder = HandshakeMachine::responder(config(2, 9, offers));
     let (mut client_wire, mut server_wire) = memory_transport_pair(
@@ -142,68 +177,67 @@ fn in_memory_transport_covers_handshake_mux_flow_control_drain_and_abort() {
         max_total_pending_frames: 2,
     };
     let mut session = Session::established(negotiated.clone(), limits, 2).unwrap();
-    let lilia = ChannelConfig {
-        key: ChannelKey {
-            namespace: ProtocolStableId::derive("mutsuki", "lilia").wire_namespace(),
-            version: ProtocolVersion::new(1, 3),
-            id: ChannelId(1),
-        },
-        mode: ChannelMode::Event,
-        priority_hint: 1,
-        capacity: 1,
-    };
-    let distributed = ChannelConfig {
-        key: ChannelKey {
-            namespace: ProtocolStableId::derive("mutsuki", "distributed").wire_namespace(),
-            version: ProtocolVersion::new(1, 3),
-            id: ChannelId(2),
-        },
-        mode: ChannelMode::RequestResponse,
-        priority_hint: 10,
-        capacity: 1,
-    };
-    session.multiplexer().open_channel(lilia.clone()).unwrap();
+    let active = registry.activate(&negotiated.protocols).unwrap();
+    let lilia_validated = active
+        .open_channel(ChannelOpenRequest {
+            protocol_id: ProtocolStableId::derive("mutsuki", "lilia"),
+            protocol_channel_id: ProtocolChannelId(1),
+            channel_id: ChannelId(1),
+            capacity: 1,
+        })
+        .unwrap();
+    let distributed_validated = active
+        .open_channel(ChannelOpenRequest {
+            protocol_id: ProtocolStableId::derive("mutsuki", "distributed"),
+            protocol_channel_id: ProtocolChannelId(1),
+            channel_id: ChannelId(2),
+            capacity: 1,
+        })
+        .unwrap();
+    let lilia = lilia_validated.config().clone();
+    let distributed = distributed_validated.config().clone();
+    session.open_validated_channel(&lilia_validated).unwrap();
     session
-        .multiplexer()
-        .open_channel(distributed.clone())
+        .open_validated_channel(&distributed_validated)
         .unwrap();
     let session_id = negotiated.session_id;
     let envelope = |channel: &ChannelConfig, value: u8| Envelope {
         session_id,
-        channel: channel.key.clone(),
+        channel_id: channel.id,
+        generation: channel.generation,
         sequence: u64::from(value),
         nesting_depth: 1,
         flags: EnvelopeFlags::default(),
         payload: vec![value],
     };
-    session.multiplexer().enqueue(envelope(&lilia, 1)).unwrap();
+    session.data_plane().enqueue(envelope(&lilia, 1)).unwrap();
     assert!(matches!(
-        session.multiplexer().enqueue(envelope(&lilia, 2)),
+        session.data_plane().enqueue(envelope(&lilia, 2)),
         Err(LinkError::Backpressure { channel: 1, .. })
     ));
     session
-        .multiplexer()
+        .data_plane()
         .enqueue(envelope(&distributed, 3))
         .unwrap();
     // Data reached its global bound, but reserved control capacity remains usable.
     session
-        .multiplexer()
+        .data_plane()
         .enqueue_control(b"drain".to_vec())
         .unwrap();
     assert!(matches!(
-        session.multiplexer().next_outbound(),
+        session.data_plane().next_outbound(),
         Some(OutboundFrame::Control(_))
     ));
 
     session.begin_drain().unwrap();
-    while session.multiplexer().next_outbound().is_some() {}
+    while session.data_plane().next_outbound().is_some() {}
     session.finish_drain().unwrap();
     assert_eq!(session.info().close_reason, Some(CloseReason::Graceful));
 
     let mut aborted = Session::established(negotiated, limits, 1).unwrap();
-    aborted.multiplexer().open_channel(lilia.clone()).unwrap();
-    aborted.multiplexer().enqueue(envelope(&lilia, 9)).unwrap();
+    aborted.open_validated_channel(&lilia_validated).unwrap();
+    aborted.data_plane().enqueue(envelope(&lilia, 9)).unwrap();
     aborted.abort();
-    assert_eq!(aborted.multiplexer().pending_frames(), 0);
+    assert_eq!(aborted.data_plane().pending_frames(), 0);
     assert_eq!(aborted.info().close_reason, Some(CloseReason::LocalAbort));
 }

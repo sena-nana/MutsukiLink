@@ -1,8 +1,9 @@
 #![allow(clippy::cast_precision_loss, clippy::missing_errors_doc)]
 
 use mutsuki_link::{
-    ChannelConfig, ChannelId, ChannelKey, ChannelMode, Envelope, EnvelopeFlags, Multiplexer,
-    MultiplexerLimits, OutboundFrame, ProtocolVersion, SessionId,
+    ChannelConfig, ChannelGeneration, ChannelId, ChannelKey, ChannelMode, Envelope, EnvelopeFlags,
+    Multiplexer, MultiplexerLimits, OutboundFrame, ProtocolChannelId, ProtocolStableId,
+    ProtocolVersion, SessionId,
 };
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -161,30 +162,40 @@ fn populated_mux(
     channels: usize,
     payload_bytes: usize,
 ) -> Result<(Multiplexer, Vec<Envelope>), Box<dyn Error>> {
-    let mut mux = Multiplexer::new(MultiplexerLimits {
-        max_frame_bytes: 1024 * 1024,
-        max_nesting_depth: 1,
-        max_channels: 64,
-        control_queue_capacity: 8,
-        max_total_pending_frames: 72,
-    })?;
+    let session_id = SessionId::from_bytes([1; 16]);
+    let mut mux = Multiplexer::new(
+        session_id,
+        MultiplexerLimits {
+            max_frame_bytes: 1024 * 1024,
+            max_nesting_depth: 1,
+            max_channels: 64,
+            control_queue_capacity: 8,
+            max_total_pending_frames: 72,
+        },
+    )?;
     let mut frames = Vec::with_capacity(channels);
     for index in 0..channels {
         let id = ChannelId(u32::try_from(index + 1)?);
         let key = ChannelKey {
-            namespace: "benchmark.mux".to_owned(),
+            protocol_id: ProtocolStableId::derive("benchmark", "mux"),
             version: ProtocolVersion::new(1, 0),
-            id,
+            protocol_channel_id: ProtocolChannelId(u16::try_from(index + 1)?),
         };
         mux.open_channel(ChannelConfig {
-            key: key.clone(),
+            key,
+            id,
+            generation: ChannelGeneration::INITIAL,
             mode: ChannelMode::Stream,
             priority_hint: u8::try_from((index % 8) * 32)?,
             capacity: 1,
+            max_frame_bytes: 1024 * 1024,
+            max_stream_bytes: Some(u64::MAX),
+            discardable: false,
         })?;
         frames.push(Envelope {
-            session_id: SessionId::from_bytes([1; 16]),
-            channel: key,
+            session_id,
+            channel_id: id,
+            generation: ChannelGeneration::INITIAL,
             sequence: 0,
             nesting_depth: 0,
             flags: EnvelopeFlags::default(),

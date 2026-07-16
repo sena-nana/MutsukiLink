@@ -3,6 +3,7 @@ use core::fmt;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LimitKind {
     FrameBytes,
+    StreamBytes,
     NestingDepth,
     Channels,
     PendingFrames,
@@ -18,6 +19,9 @@ pub enum LinkError {
     LimitExceeded { kind: LimitKind, limit: usize },
     Backpressure { channel: u32, capacity: usize },
     UnknownChannel(u32),
+    ClosedChannel(u32),
+    SessionMismatch,
+    ChannelGenerationMismatch { channel: u32 },
     ChannelCancelled(u32),
     NamespaceConflict,
     Closed,

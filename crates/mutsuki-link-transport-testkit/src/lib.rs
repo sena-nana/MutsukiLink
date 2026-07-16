@@ -17,6 +17,7 @@ pub async fn run_session_transport_suite(
     server: &mut impl Connection,
 ) {
     let offers = vec![offer("mutsuki.lilia"), offer("mutsuki.distributed")];
+    let registry = protocol_registry(&offers);
     let mut initiator = HandshakeMachine::initiator(config(1, 0, offers.clone()));
     let mut responder = HandshakeMachine::responder(config(2, 9, offers));
     let mut codec = HarnessCodec::new();
@@ -53,54 +54,47 @@ pub async fn run_session_transport_suite(
         max_total_pending_frames: 2,
     };
     let mut session = Session::established(negotiated.clone(), limits, 2).unwrap();
-    let data_channel = ChannelConfig {
-        key: ChannelKey {
-            namespace: ProtocolStableId::derive("mutsuki", "lilia").wire_namespace(),
-            version: ProtocolVersion::new(1, 3),
-            id: ChannelId(1),
-        },
-        mode: ChannelMode::Stream,
-        priority_hint: 1,
-        capacity: 1,
-    };
-    let control_channel = ChannelConfig {
-        key: ChannelKey {
-            namespace: ProtocolStableId::derive("mutsuki", "distributed").wire_namespace(),
-            version: ProtocolVersion::new(1, 3),
-            id: ChannelId(2),
-        },
-        mode: ChannelMode::RequestResponse,
-        priority_hint: 10,
-        capacity: 1,
-    };
-    session
-        .multiplexer()
-        .open_channel(data_channel.clone())
+    let active = registry.activate(&negotiated.protocols).unwrap();
+    let data_validated = active
+        .open_channel(ChannelOpenRequest {
+            protocol_id: ProtocolStableId::derive("mutsuki", "lilia"),
+            protocol_channel_id: ProtocolChannelId(1),
+            channel_id: ChannelId(1),
+            capacity: 1,
+        })
         .unwrap();
-    session
-        .multiplexer()
-        .open_channel(control_channel.clone())
+    let control_validated = active
+        .open_channel(ChannelOpenRequest {
+            protocol_id: ProtocolStableId::derive("mutsuki", "distributed"),
+            protocol_channel_id: ProtocolChannelId(1),
+            channel_id: ChannelId(2),
+            capacity: 1,
+        })
         .unwrap();
+    let data_channel = data_validated.config().clone();
+    let control_channel = control_validated.config().clone();
+    session.open_validated_channel(&data_validated).unwrap();
+    session.open_validated_channel(&control_validated).unwrap();
     session
-        .multiplexer()
+        .data_plane()
         .enqueue(envelope(&negotiated, &data_channel, b"bulk"))
         .unwrap();
     session
-        .multiplexer()
+        .data_plane()
         .enqueue(envelope(&negotiated, &control_channel, b"status"))
         .unwrap();
     session
-        .multiplexer()
+        .data_plane()
         .enqueue_control(b"ping".to_vec())
         .unwrap();
     assert!(matches!(
-        session.multiplexer().next_outbound(),
+        session.data_plane().next_outbound(),
         Some(OutboundFrame::Control(value)) if value == b"ping"
     ));
     client.try_send_control(b"ping").unwrap();
     assert_eq!(receive(server).await, b"ping");
 
-    while let Some(frame) = session.multiplexer().next_outbound() {
+    while let Some(frame) = session.data_plane().next_outbound() {
         let payload = match frame {
             OutboundFrame::Control(payload) => payload,
             OutboundFrame::Data(envelope) => envelope.payload,
@@ -113,16 +107,14 @@ pub async fn run_session_transport_suite(
     assert_eq!(session.info().close_reason, Some(CloseReason::Graceful));
 
     let mut aborted = Session::established(negotiated, limits, 1).unwrap();
-    aborted
-        .multiplexer()
-        .open_channel(data_channel.clone())
-        .unwrap();
+    aborted.open_validated_channel(&data_validated).unwrap();
     let aborted_session_id = aborted.info().session_id;
     aborted
-        .multiplexer()
+        .data_plane()
         .enqueue(Envelope {
             session_id: aborted_session_id,
-            channel: data_channel.key,
+            channel_id: data_channel.id,
+            generation: data_channel.generation,
             sequence: 2,
             nesting_depth: 0,
             flags: EnvelopeFlags::default(),
@@ -130,7 +122,7 @@ pub async fn run_session_transport_suite(
         })
         .unwrap();
     aborted.abort();
-    assert_eq!(aborted.multiplexer().pending_frames(), 0);
+    assert_eq!(aborted.data_plane().pending_frames(), 0);
     assert_eq!(aborted.info().close_reason, Some(CloseReason::LocalAbort));
 }
 
@@ -178,12 +170,47 @@ fn config(value: u8, session: u8, protocols: Vec<ProtocolOffer>) -> HandshakeCon
 fn envelope(session: &NegotiatedSession, channel: &ChannelConfig, payload: &[u8]) -> Envelope {
     Envelope {
         session_id: session.session_id,
-        channel: channel.key.clone(),
+        channel_id: channel.id,
+        generation: channel.generation,
         sequence: 1,
         nesting_depth: 0,
         flags: EnvelopeFlags::default(),
         payload: payload.to_vec(),
     }
+}
+
+fn protocol_registry(offers: &[ProtocolOffer]) -> FrozenProtocolRegistry {
+    let mut registry = ProtocolRegistry::new(ProtocolRegistryLimits::default()).unwrap();
+    for offer in offers {
+        let is_stream = offer
+            .debug_identity
+            .as_ref()
+            .is_some_and(|identity| identity.name == "lilia");
+        registry
+            .register(ProtocolDescriptor {
+                stable_id: offer.stable_id,
+                debug_identity: offer.debug_identity.clone(),
+                versions: offer.versions,
+                schema: offer.schema,
+                capabilities: offer.capabilities.clone(),
+                channels: vec![ProtocolChannelDescriptor {
+                    id: ProtocolChannelId(1),
+                    debug_name: None,
+                    mode: if is_stream {
+                        ChannelMode::Stream
+                    } else {
+                        ChannelMode::RequestResponse
+                    },
+                    priority: if is_stream { 1 } else { 10 },
+                    max_frame_bytes: 64,
+                    max_stream_bytes: is_stream.then_some(1024),
+                    max_in_flight_frames: 1,
+                    discardable: false,
+                }],
+            })
+            .unwrap();
+    }
+    registry.freeze()
 }
 
 struct HarnessCodec {

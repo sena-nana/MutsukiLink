@@ -264,9 +264,9 @@ fn resume_is_connection_only_and_never_replays_non_idempotent_requests() {
         expires_at_unix_ms: 5_000,
         channel_cursors: vec![ChannelCursor {
             channel: ChannelKey {
-                namespace: "mutsuki.events".to_owned(),
+                protocol_id: ProtocolStableId::derive("mutsuki", "events"),
                 version: ProtocolVersion::new(1, 0),
-                id: ChannelId(1),
+                protocol_channel_id: ProtocolChannelId(1),
             },
             cursor: b"owner-sequence-42".to_vec(),
         }],
@@ -406,21 +406,28 @@ fn saturated_lossy_channel_cannot_block_control_and_budgets_are_hard() {
         max_total_pending_frames: 1,
         ..MultiplexerLimits::default()
     };
-    let mut mux = Multiplexer::new(limits).unwrap();
+    let session_id = SessionId::from_bytes([1; 16]);
+    let mut mux = Multiplexer::new(session_id, limits).unwrap();
     let channel = ChannelConfig {
         key: ChannelKey {
-            namespace: "mutsuki.events".to_owned(),
+            protocol_id: ProtocolStableId::derive("mutsuki", "events"),
             version: ProtocolVersion::new(1, 0),
-            id: ChannelId(1),
+            protocol_channel_id: ProtocolChannelId(1),
         },
+        id: ChannelId(1),
+        generation: ChannelGeneration::INITIAL,
         mode: ChannelMode::Event,
         priority_hint: u8::MAX,
         capacity: 1,
+        max_frame_bytes: 1024,
+        max_stream_bytes: None,
+        discardable: true,
     };
     mux.open_channel(channel.clone()).unwrap();
     let frame = |sequence| Envelope {
-        session_id: SessionId::from_bytes([1; 16]),
-        channel: channel.key.clone(),
+        session_id,
+        channel_id: channel.id,
+        generation: channel.generation,
         sequence,
         nesting_depth: 0,
         flags: EnvelopeFlags::default(),

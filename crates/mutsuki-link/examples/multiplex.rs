@@ -1,14 +1,17 @@
 use mutsuki_link::{
-    ChannelConfig, ChannelId, ChannelKey, ChannelMode, Envelope, EnvelopeFlags, Multiplexer,
-    MultiplexerLimits, OutboundFrame, ProtocolVersion, SessionId,
+    ChannelConfig, ChannelGeneration, ChannelId, ChannelKey, ChannelMode, Envelope, EnvelopeFlags,
+    Multiplexer, MultiplexerLimits, OutboundFrame, ProtocolChannelId, ProtocolStableId,
+    ProtocolVersion, SessionId,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let version = ProtocolVersion::new(1, 0);
-    let namespace = "example.multi";
+    let protocol_id = ProtocolStableId::derive("example", "multi");
+    let session_id = SessionId::from_bytes([1; 16]);
     let mut mux = Multiplexer::restricted(
+        session_id,
         MultiplexerLimits::default(),
-        [(namespace.to_owned(), version)],
+        [(protocol_id, version)],
     )?;
     for (id, mode, priority) in [
         (1, ChannelMode::RequestResponse, 0),
@@ -17,24 +20,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ] {
         mux.open_channel(ChannelConfig {
             key: ChannelKey {
-                namespace: namespace.to_owned(),
+                protocol_id,
                 version,
-                id: ChannelId(id),
+                protocol_channel_id: ProtocolChannelId(u16::try_from(id)?),
             },
+            id: ChannelId(id),
+            generation: ChannelGeneration::INITIAL,
             mode,
             priority_hint: priority,
             capacity: 4,
+            max_frame_bytes: 1024,
+            max_stream_bytes: (mode == ChannelMode::Stream).then_some(16 * 1024),
+            discardable: mode == ChannelMode::Event,
         })?;
     }
-    let session_id = SessionId::from_bytes([1; 16]);
     for (id, payload) in [(1, b"request".as_slice()), (2, b"event"), (3, b"stream")] {
         mux.enqueue(Envelope {
             session_id,
-            channel: ChannelKey {
-                namespace: namespace.to_owned(),
-                version,
-                id: ChannelId(id),
-            },
+            channel_id: ChannelId(id),
+            generation: ChannelGeneration::INITIAL,
             sequence: 1,
             nesting_depth: 0,
             flags: EnvelopeFlags {
@@ -51,7 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match frame {
             OutboundFrame::Control(_) => order.push("control".to_owned()),
             OutboundFrame::Data(envelope) => {
-                order.push(format!("channel-{}", envelope.channel.id.0));
+                order.push(format!("channel-{}", envelope.channel_id.0));
             }
         }
     }

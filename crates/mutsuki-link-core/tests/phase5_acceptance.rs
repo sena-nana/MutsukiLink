@@ -151,27 +151,31 @@ fn independent_protocols_share_link_without_sharing_business_messages() {
             capacity: 2,
         })
         .unwrap();
-    assert_ne!(lilia.config.key.namespace, distributed.config.key.namespace);
-    assert_eq!(lilia.config.mode, ChannelMode::Stream);
-    assert_eq!(distributed.config.mode, ChannelMode::RequestResponse);
+    assert_ne!(
+        lilia.config().key.protocol_id,
+        distributed.config().key.protocol_id
+    );
+    assert_eq!(lilia.config().mode, ChannelMode::Stream);
+    assert_eq!(distributed.config().mode, ChannelMode::RequestResponse);
     assert_eq!(
         lilia.accepted_mapping(),
         AcceptChannel {
-            protocol_id: lilia.protocol_id,
+            protocol_id: lilia.protocol_id(),
             protocol_channel_id: protocol_channel_id("file"),
             session_channel_id: ChannelId(1),
         }
     );
 
     let mut mux = Multiplexer::restricted(
+        SessionId::from_bytes([1; 16]),
         MultiplexerLimits::default(),
         selections
             .iter()
-            .map(|selection| (selection.stable_id.wire_namespace(), selection.version)),
+            .map(|selection| (selection.stable_id, selection.version)),
     )
     .unwrap();
-    mux.open_channel(lilia.config).unwrap();
-    mux.open_channel(distributed.config).unwrap();
+    mux.open_channel(lilia.config().clone()).unwrap();
+    mux.open_channel(distributed.config().clone()).unwrap();
 }
 
 #[test]
@@ -202,6 +206,20 @@ fn one_incompatible_protocol_is_disabled_without_breaking_the_other() {
             .unwrap_err()
             .kind,
         ProtocolRegistryErrorKind::ProtocolNotNegotiated
+    );
+}
+
+#[test]
+fn activation_rejects_capabilities_not_selected_from_frozen_descriptor() {
+    let registry = product_registry();
+    let mut selection = registry
+        .negotiate(&[offer("lilia.code", versions(1, 0, 2))])
+        .unwrap()
+        .remove(0);
+    selection.capabilities.words = vec![1];
+    assert_eq!(
+        registry.activate(&[selection]).unwrap_err().kind,
+        ProtocolRegistryErrorKind::InvalidCapabilities
     );
 }
 

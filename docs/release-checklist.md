@@ -78,6 +78,7 @@ cargo run -p mutsuki-link --example manual_server --features local -- my-link-ad
 cargo run -p mutsuki-link --example discovery_pairing --features discovery,pairing
 cargo run -p mutsuki-link --example local_sidecar --features local
 cargo run -p mutsuki-link --example multiplex
+cargo run --release -p mutsuki-link --example compact_data_baseline
 ```
 
 Review the dependency trees for `local`, `tcp`, `quic`, `discovery`, `mdns`, `pairing`, and

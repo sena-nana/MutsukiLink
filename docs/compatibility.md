@@ -30,6 +30,11 @@ The Phase 6 release suite exercises the current compatible minor, the previous c
 an incompatible major, duplicate and out-of-order handshake frames, unknown protocols/channels,
 frame/nesting limits, truncation, and bounded reconnect/discovery/pairing storms.
 
+Typed control and compact data are separate negotiated capabilities. Compact data is enabled only
+when both peers selected typed control and `COMPACT_CHANNEL_ID`; otherwise the Session is explicitly
+legacy and the compact codec rejects use. A Session never mixes the two identity rules. See
+[Typed control](typed-control.md) and [compact data](compact-data.md) for the migration matrix.
+
 ## Semver
 
 - Public Rust API follows Cargo semver.

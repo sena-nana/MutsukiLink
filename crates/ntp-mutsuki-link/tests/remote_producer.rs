@@ -1,4 +1,6 @@
-use mutsuki_link_core::{ConnectContext, Connection, EndpointId, TransportBudget};
+use mutsuki_link_core::{
+    COMPACT_DATA_HEADER_BYTES, ConnectContext, Connection, EndpointId, TransportBudget,
+};
 use mutsuki_link_quic::{QuicConnector, QuicListener, QuicOptions};
 use nana_tracking_protocol::{
     ActiveLayout, CanonicalCodec, CoordinateSpace, Direction3, LayoutLimits, LayoutProposal,
@@ -204,7 +206,6 @@ fn assert_publish_uses_all_flows(outcome: PublishOutcome) {
 #[test]
 fn full_profile_60_and_120_fps_bandwidth_remains_bounded() {
     const CONSERVATIVE_PAYLOAD: usize = 1_100;
-    const LINK_HEADER: usize = 20;
     let (descriptor, result) = full_result(15, 2_150_000, 2_160_000);
     let layout = ActiveLayout::negotiate(
         7,
@@ -216,8 +217,9 @@ fn full_profile_60_and_120_fps_bandwidth_remains_bounded() {
     let canonical_bytes = CanonicalCodec::encode(&result).unwrap().len();
     let chunk_bytes = CONSERVATIVE_PAYLOAD - RESULT_FRAGMENT_HEADER_LEN;
     let fragments = canonical_bytes.div_ceil(chunk_bytes);
-    let compact_wire_bytes = LINK_HEADER + layout.frame_len();
-    let full_wire_bytes = canonical_bytes + fragments * (LINK_HEADER + RESULT_FRAGMENT_HEADER_LEN);
+    let compact_wire_bytes = COMPACT_DATA_HEADER_BYTES + layout.frame_len();
+    let full_wire_bytes =
+        canonical_bytes + fragments * (COMPACT_DATA_HEADER_BYTES + RESULT_FRAGMENT_HEADER_LEN);
     let per_frame_with_geometry_cadence =
         compact_wire_bytes + full_wire_bytes + full_wire_bytes / 15;
     let bandwidth_60_bps = per_frame_with_geometry_cadence * 60 * 8;

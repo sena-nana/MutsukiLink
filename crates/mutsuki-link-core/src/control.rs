@@ -1,6 +1,6 @@
 use crate::{
-    AuthPath, ChannelId, Identity, ProtocolOffer, ProtocolSelection, ProtocolVersion, SessionId,
-    VersionRange,
+    AuthPath, ChannelGeneration, ChannelId, Identity, ProtocolOffer, ProtocolSelection,
+    ProtocolVersion, SessionId, VersionRange,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -336,8 +336,15 @@ pub struct AcceptChannel {
 #[derive(Clone, Debug)]
 pub struct SessionChannelMap {
     maximum: usize,
-    by_protocol: BTreeMap<(ProtocolStableId, ProtocolChannelId), ChannelId>,
-    by_session: BTreeMap<ChannelId, (ProtocolStableId, ProtocolChannelId)>,
+    by_protocol: BTreeMap<(ProtocolStableId, ProtocolChannelId), SessionChannelBinding>,
+    by_session: BTreeMap<ChannelId, (ProtocolStableId, ProtocolChannelId, ChannelGeneration)>,
+    retired: BTreeSet<ChannelId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SessionChannelBinding {
+    pub channel_id: ChannelId,
+    pub generation: ChannelGeneration,
 }
 
 impl SessionChannelMap {
@@ -349,26 +356,50 @@ impl SessionChannelMap {
             maximum,
             by_protocol: BTreeMap::new(),
             by_session: BTreeMap::new(),
+            retired: BTreeSet::new(),
         })
     }
 
-    pub fn bind(&mut self, accepted: AcceptChannel) -> Result<(), LinkControlError> {
+    pub fn bind(
+        &mut self,
+        accepted: AcceptChannel,
+    ) -> Result<SessionChannelBinding, LinkControlError> {
+        self.validate_bind(accepted)?;
+        Ok(self.bind_validated(accepted))
+    }
+
+    pub(crate) fn bind_validated(&mut self, accepted: AcceptChannel) -> SessionChannelBinding {
+        let binding = SessionChannelBinding {
+            channel_id: accepted.session_channel_id,
+            generation: ChannelGeneration::INITIAL,
+        };
+        let protocol_key = (accepted.protocol_id, accepted.protocol_channel_id);
+        self.by_protocol.insert(protocol_key, binding);
+        self.by_session.insert(
+            accepted.session_channel_id,
+            (
+                accepted.protocol_id,
+                accepted.protocol_channel_id,
+                binding.generation,
+            ),
+        );
+        binding
+    }
+
+    pub(crate) fn validate_bind(&self, accepted: AcceptChannel) -> Result<(), LinkControlError> {
         if accepted.protocol_channel_id.0 == 0 || accepted.session_channel_id.0 == 0 {
             return Err(LinkControlError::invalid_channel_mapping());
         }
         let protocol_key = (accepted.protocol_id, accepted.protocol_channel_id);
         if self.by_protocol.contains_key(&protocol_key)
             || self.by_session.contains_key(&accepted.session_channel_id)
+            || self.retired.contains(&accepted.session_channel_id)
         {
             return Err(LinkControlError::duplicate_channel_mapping());
         }
-        if self.by_protocol.len() >= self.maximum {
+        if self.by_protocol.len().saturating_add(self.retired.len()) >= self.maximum {
             return Err(LinkControlError::channel_mapping_limit());
         }
-        self.by_protocol
-            .insert(protocol_key, accepted.session_channel_id);
-        self.by_session
-            .insert(accepted.session_channel_id, protocol_key);
         Ok(())
     }
 
@@ -379,6 +410,16 @@ impl SessionChannelMap {
     ) -> Option<ChannelId> {
         self.by_protocol
             .get(&(protocol_id, protocol_channel_id))
+            .map(|binding| binding.channel_id)
+    }
+
+    pub fn binding(
+        &self,
+        protocol_id: ProtocolStableId,
+        protocol_channel_id: ProtocolChannelId,
+    ) -> Option<SessionChannelBinding> {
+        self.by_protocol
+            .get(&(protocol_id, protocol_channel_id))
             .copied()
     }
 
@@ -386,6 +427,15 @@ impl SessionChannelMap {
         &self,
         session_channel_id: ChannelId,
     ) -> Option<(ProtocolStableId, ProtocolChannelId)> {
+        self.by_session
+            .get(&session_channel_id)
+            .map(|(protocol_id, protocol_channel_id, _)| (*protocol_id, *protocol_channel_id))
+    }
+
+    pub fn session_binding(
+        &self,
+        session_channel_id: ChannelId,
+    ) -> Option<(ProtocolStableId, ProtocolChannelId, ChannelGeneration)> {
         self.by_session.get(&session_channel_id).copied()
     }
 
@@ -393,8 +443,10 @@ impl SessionChannelMap {
         &mut self,
         session_channel_id: ChannelId,
     ) -> Option<(ProtocolStableId, ProtocolChannelId)> {
-        let protocol_key = self.by_session.remove(&session_channel_id)?;
+        let (protocol_id, protocol_channel_id, _) = self.by_session.remove(&session_channel_id)?;
+        let protocol_key = (protocol_id, protocol_channel_id);
         self.by_protocol.remove(&protocol_key);
+        self.retired.insert(session_channel_id);
         Some(protocol_key)
     }
 
@@ -1494,6 +1546,14 @@ mod tests {
             mappings.protocol_channel(ChannelId(17)),
             Some((protocol_id, ProtocolChannelId(3)))
         );
+        assert_eq!(
+            mappings.session_binding(ChannelId(17)),
+            Some((
+                protocol_id,
+                ProtocolChannelId(3),
+                ChannelGeneration::INITIAL,
+            ))
+        );
 
         assert_eq!(mappings.bind(accepted).unwrap_err().code, ErrorCode(2));
         assert_eq!(
@@ -1512,5 +1572,33 @@ mod tests {
             Some((protocol_id, ProtocolChannelId(3)))
         );
         assert!(mappings.is_empty());
+        assert_eq!(
+            mappings
+                .bind(AcceptChannel {
+                    protocol_id,
+                    protocol_channel_id: ProtocolChannelId(5),
+                    session_channel_id: ChannelId(17),
+                })
+                .unwrap_err()
+                .code,
+            ErrorCode(2)
+        );
+        mappings
+            .bind(AcceptChannel {
+                protocol_id,
+                protocol_channel_id: ProtocolChannelId(6),
+                session_channel_id: ChannelId(18),
+            })
+            .unwrap();
+        mappings.unbind(ChannelId(18));
+        let error = mappings
+            .bind(AcceptChannel {
+                protocol_id,
+                protocol_channel_id: ProtocolChannelId(7),
+                session_channel_id: ChannelId(19),
+            })
+            .unwrap_err();
+        assert_eq!(error.domain, ErrorDomain::Resource);
+        assert_eq!(error.code, ErrorCode(1));
     }
 }
