@@ -1,0 +1,22 @@
+{
+  "schema": "mutsuki-link-ntp-reliable-fallback/1.0.0",
+  "date": "2026-07-16",
+  "smoke_only": true,
+  "claim_boundary": "Synthetic in-process memory transport on one macOS aarch64 host; not network or production latency evidence",
+  "mode": "ReliableLatestOnly",
+  "full_results": 120,
+  "total_microseconds": 14310,
+  "latency_microseconds": {
+    "p50": 128,
+    "p99": 263,
+    "max": 350
+  },
+  "control_pings": 10,
+  "control_starvation_observed": false,
+  "transport_data_queue_capacity": 1,
+  "logical_flow_slots": 3,
+  "replace_pending_observed": true,
+  "steady_sender_buffer_growths": 0,
+  "receiver_payload_copy_after_transport": false,
+  "command": "cargo test --release -p ntp-mutsuki-link --test remote_producer authenticated_reliable_fallback -- --nocapture"
+}

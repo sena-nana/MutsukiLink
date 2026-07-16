@@ -9,8 +9,8 @@ use mutsuki_link::{
     ControlIdentityMode, ControlModeGuard, ControlPayload, EndpointId, HandshakeConfig,
     HandshakeFrame, HandshakeMachine, HandshakeOutput, HandshakePolicy, HeartbeatAction,
     HeartbeatController, HeartbeatPolicy, Identity, IdentityProof, PeerId, Ping, ProofDecision,
-    ProtocolOffer, ProtocolVersion, RequestId, SessionId, TransportBudget, TransportErrorKind,
-    VersionRange, decode_control_envelope, encode_control_envelope,
+    ProtocolId, ProtocolOffer, ProtocolVersion, RequestId, SessionId, TransportBudget,
+    TransportErrorKind, VersionRange, decode_control_envelope, encode_control_envelope,
     local::{self, LocalAddress, LocalListener},
     quic::{QuicConnector, QuicListener, QuicOptions},
     tcp::{self, TcpConfig, TcpListener},
@@ -230,17 +230,17 @@ where
 {
     for _ in 0..WARMUP_SAMPLES {
         send_with_retry(&mut client, b"warmup", true).await?;
-        let request = receive_with_deadline(&mut server).await?;
+        let request = receive_with_deadline(&mut server, true).await?;
         send_with_retry(&mut server, &request, true).await?;
-        let _response = receive_with_deadline(&mut client).await?;
+        let _response = receive_with_deadline(&mut client, true).await?;
     }
     let mut rtts = Vec::with_capacity(RTT_SAMPLE_COUNT);
     for _ in 0..RTT_SAMPLE_COUNT {
         let started = Instant::now();
         send_with_retry(&mut client, b"rtt", true).await?;
-        let request = receive_with_deadline(&mut server).await?;
+        let request = receive_with_deadline(&mut server, true).await?;
         send_with_retry(&mut server, &request, true).await?;
-        let _response = receive_with_deadline(&mut client).await?;
+        let _response = receive_with_deadline(&mut client, true).await?;
         rtts.push(started.elapsed().as_micros());
     }
 
@@ -252,11 +252,14 @@ where
         let started = Instant::now();
         send_with_retry(&mut client, b"release-control", true).await?;
         loop {
-            if receive_with_deadline(&mut server).await? == b"release-control" {
+            if receive_with_deadline(&mut server, true).await? == b"release-control" {
                 break;
             }
         }
         control_samples.push(started.elapsed().as_micros());
+        for _ in 0..32 {
+            let _ = receive_with_deadline(&mut server, false).await?;
+        }
     }
 
     let mut throughput = Vec::with_capacity(THROUGHPUT_CASES.len());
@@ -272,7 +275,7 @@ where
             }
             for _ in 0..batch {
                 transferred = transferred
-                    .saturating_add(receive_with_deadline(&mut server).await?.len() as u128);
+                    .saturating_add(receive_with_deadline(&mut server, false).await?.len() as u128);
             }
             remaining -= batch;
         }
@@ -315,7 +318,9 @@ async fn send_with_retry<C: Connection>(
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
         let result = if control {
-            connection.try_send_control(payload)
+            connection
+                .open_control_stream(baseline_protocol())?
+                .try_send(payload)
         } else {
             connection.try_send(payload)
         };
@@ -334,10 +339,18 @@ async fn send_with_retry<C: Connection>(
 
 async fn receive_with_deadline<C: Connection>(
     connection: &mut C,
+    control: bool,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
-        match connection.try_receive() {
+        let result = if control {
+            connection
+                .open_control_stream(baseline_protocol())?
+                .try_receive()
+        } else {
+            connection.try_receive()
+        };
+        match result {
             Ok(Some(message)) => return Ok(message),
             Ok(None) => return Err("connection closed during baseline".into()),
             Err(error) if error.kind == TransportErrorKind::WouldBlock => {
@@ -349,6 +362,10 @@ async fn receive_with_deadline<C: Connection>(
             Err(error) => return Err(error.into()),
         }
     }
+}
+
+fn baseline_protocol() -> ProtocolId {
+    ProtocolId::new("mutsuki.release-baseline").expect("static protocol identifier is valid")
 }
 
 fn baseline_budget() -> TransportBudget {

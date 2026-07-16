@@ -11,33 +11,70 @@
     clippy::too_many_lines
 )]
 
+mod auth;
 mod control;
 mod fragment;
+mod reliable;
 
+pub use auth::{
+    NtpAuthorization, NtpPermission, NtpPermissionGrant, NtpPermissions, NtpRole,
+    authorize_ntp_session, authorize_trusted_ntp_session,
+};
 pub use control::{ControlMessage, ProtocolHello, SessionCommand, SessionProposal};
 
 use control::ControlMessage as Message;
 use fragment::{FragmentSend, Reassembler, ReassemblyOutcome, send_fragmented};
 use mutsuki_link_core::{
-    Connection, ProtocolId, RealtimeDatagram, RealtimeFlowId, RealtimePriority, SendOutcome,
-    TransportError, TransportErrorKind,
+    Connection, PeerId, ProtocolId, RealtimeDatagram, RealtimeFlowId, RealtimePriority,
+    SendOutcome, SessionId as LinkSessionId, TransportError, TransportErrorKind,
 };
 use nana_tracking_protocol::{
     ActiveLayout, CanonicalCodec, CompactFrameCodec, CompactFrameError, CompactFrameInput,
     CompactFrameRef, CompactSample, CompactStreamError, CompactStreamGuard, CompactStreamPolicy,
     ContractError, HandshakeError, HandshakeLimits, LayoutError, LayoutNegotiator, LayoutProposal,
     NanaTrackingDescriptor, NanaTrackingResult, ProducerClockEstimate, ResultStreamGuard,
-    SessionId, StreamError, WireDecode,
+    SessionId, StreamError, ValueEncoding, WireDecode,
 };
 use std::collections::VecDeque;
 use std::fmt;
 use std::time::{Duration, Instant};
 
-pub const CONTROL_PROTOCOL: &str = "nana.tracking.remote.v1";
+pub const CONTROL_PROTOCOL: &str = "nana.tracking.remote.v2";
 pub const COMPACT_RIG_FLOW: RealtimeFlowId = RealtimeFlowId(0x4e10);
 pub const CORE_RESULT_FLOW: RealtimeFlowId = RealtimeFlowId(0x4e11);
 pub const GEOMETRY_FLOW: RealtimeFlowId = RealtimeFlowId(0x4e12);
 pub const RESULT_FRAGMENT_HEADER_LEN: usize = fragment::HEADER_LEN;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrackingTransportMode {
+    ReliableLatestOnly,
+    Datagram,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BoundNtpSession {
+    pub peer_id: PeerId,
+    pub link_session_id: LinkSessionId,
+    pub ntp_session_id: SessionId,
+    pub generation: u32,
+    pub layout_id: u32,
+    pub layout_hash: [u8; 32],
+    pub expected_frame_len: u32,
+    pub value_encoding: ValueEncoding,
+    pub target_fps: u16,
+    pub transport_mode: TrackingTransportMode,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TrackingTelemetry {
+    pub reliable_pending: usize,
+    pub queue_replacements: u64,
+    pub rate_limited: u64,
+    pub malformed_frames: u64,
+    pub fuse_tripped: bool,
+    pub steady_buffer_growths: u64,
+    pub replay_dropped: u64,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GeometryTopology {
@@ -74,6 +111,12 @@ pub struct BindingConfig {
     pub max_fragments: usize,
     pub max_control_bytes: usize,
     pub max_pending_control: usize,
+    pub max_tracking_frame_bytes: usize,
+    pub max_target_fps: u16,
+    pub max_burst_fps: u16,
+    pub max_reconfigure_per_minute: u16,
+    pub max_receive_frames_per_poll: usize,
+    pub max_protocol_violations: u16,
     /// `None` disables automatic dense-geometry snapshots. An explicit request still sends one.
     pub geometry_cadence: Option<u64>,
     pub compact_policy: CompactStreamPolicy,
@@ -88,6 +131,12 @@ impl Default for BindingConfig {
             max_fragments: 8_192,
             max_control_bytes: 64 * 1024,
             max_pending_control: 16,
+            max_tracking_frame_bytes: 8 * 1024 * 1024,
+            max_target_fps: 120,
+            max_burst_fps: 240,
+            max_reconfigure_per_minute: 6,
+            max_receive_frames_per_poll: 32,
+            max_protocol_violations: 8,
             geometry_cadence: Some(15),
             compact_policy: CompactStreamPolicy {
                 max_frame_age_ns: 100_000_000,
@@ -110,6 +159,13 @@ impl BindingConfig {
             || self.max_fragments > usize::from(u16::MAX)
             || self.max_control_bytes == 0
             || self.max_pending_control == 0
+            || self.max_tracking_frame_bytes == 0
+            || self.max_tracking_frame_bytes > u32::MAX as usize
+            || self.max_target_fps == 0
+            || self.max_burst_fps < self.max_target_fps
+            || self.max_reconfigure_per_minute == 0
+            || self.max_receive_frames_per_poll == 0
+            || self.max_protocol_violations == 0
             || self.geometry_cadence == Some(0)
         {
             return Err(BindingError::InvalidConfig);
@@ -140,6 +196,13 @@ pub enum BindingError {
     ControlLimit,
     PayloadLimit,
     DatagramsUnsupported,
+    Unauthorized,
+    SessionBindingMismatch,
+    LayoutMismatch,
+    RateLimited,
+    ChannelFused,
+    PeerRevoked,
+    ReplayOrDuplicate,
     StaleResult,
 }
 
@@ -167,6 +230,17 @@ impl fmt::Display for BindingError {
             Self::PayloadLimit => formatter.write_str("NTP Link payload budget is exceeded"),
             Self::DatagramsUnsupported => {
                 formatter.write_str("realtime Datagram transport is unavailable")
+            }
+            Self::Unauthorized => formatter.write_str("NTP Link permission is not granted"),
+            Self::SessionBindingMismatch => {
+                formatter.write_str("NTP Link session binding does not match")
+            }
+            Self::LayoutMismatch => formatter.write_str("NTP Link frame layout does not match"),
+            Self::RateLimited => formatter.write_str("NTP Link rate limit is exceeded"),
+            Self::ChannelFused => formatter.write_str("NTP Link frame channel is fused"),
+            Self::PeerRevoked => formatter.write_str("NTP Link peer trust is revoked"),
+            Self::ReplayOrDuplicate => {
+                formatter.write_str("NTP Link frame is replayed or duplicated")
             }
             Self::StaleResult => formatter.write_str("NTP result exceeded the freshness deadline"),
         }
@@ -263,6 +337,8 @@ enum PlaybackState {
 
 pub struct Publisher<C: Connection> {
     connection: C,
+    authorization: NtpAuthorization,
+    transport_mode: TrackingTransportMode,
     config: BindingConfig,
     remote_hello: bool,
     pending: Option<SessionDefinition>,
@@ -273,18 +349,38 @@ pub struct Publisher<C: Connection> {
     compact_samples: Vec<CompactSample>,
     compact_bytes: Vec<u8>,
     fragment_scratch: Vec<u8>,
+    reliable: reliable::ReliableLatestSender,
+    reconfigure_times: VecDeque<Instant>,
+    frame_window_started: Instant,
+    frame_window_count: u16,
+    sustained_window_started: Instant,
+    sustained_frame_count: u32,
+    rate_limited: u64,
+    last_published_sequence: Option<u64>,
     geometry_requested: bool,
     last_report: Option<ReceiverReport>,
 }
 
 impl<C: Connection> Publisher<C> {
-    pub fn new(connection: C, config: BindingConfig) -> Result<Self, BindingError> {
+    pub fn new(
+        connection: C,
+        authorization: NtpAuthorization,
+        config: BindingConfig,
+    ) -> Result<Self, BindingError> {
         let config = config.validate()?;
-        if connection.max_datagram_payload().is_none() {
-            return Err(BindingError::DatagramsUnsupported);
+        validate_connection_authorization(&connection, &authorization, NtpRole::Publisher)?;
+        let transport_mode = if connection.max_datagram_payload().is_some() {
+            TrackingTransportMode::Datagram
+        } else {
+            TrackingTransportMode::ReliableLatestOnly
+        };
+        if !connection.metadata().reliable {
+            return Err(BindingError::InvalidState);
         }
         Ok(Self {
             connection,
+            authorization,
+            transport_mode,
             config,
             remote_hello: false,
             pending: None,
@@ -295,6 +391,14 @@ impl<C: Connection> Publisher<C> {
             compact_samples: Vec::new(),
             compact_bytes: Vec::new(),
             fragment_scratch: Vec::new(),
+            reliable: reliable::ReliableLatestSender::default(),
+            reconfigure_times: VecDeque::new(),
+            frame_window_started: Instant::now(),
+            frame_window_count: 0,
+            sustained_window_started: Instant::now(),
+            sustained_frame_count: 0,
+            rate_limited: 0,
+            last_published_sequence: None,
             geometry_requested: false,
             last_report: None,
         })
@@ -306,10 +410,6 @@ impl<C: Connection> Publisher<C> {
 
     pub fn connection(&self) -> &C {
         &self.connection
-    }
-
-    pub fn connection_mut(&mut self) -> &mut C {
-        &mut self.connection
     }
 
     pub fn descriptor(&self) -> Option<&NanaTrackingDescriptor> {
@@ -324,10 +424,30 @@ impl<C: Connection> Publisher<C> {
         self.last_report
     }
 
+    pub const fn transport_mode(&self) -> TrackingTransportMode {
+        self.transport_mode
+    }
+
+    pub fn bound_session(&self) -> Option<BoundNtpSession> {
+        self.active
+            .as_ref()
+            .map(|active| bound_session(&self.authorization, active, self.transport_mode))
+    }
+
+    pub fn telemetry(&self) -> TrackingTelemetry {
+        TrackingTelemetry {
+            reliable_pending: self.reliable.pending(),
+            queue_replacements: self.reliable.replacements(),
+            rate_limited: self.rate_limited,
+            steady_buffer_growths: self.reliable.buffer_growths(),
+            ..TrackingTelemetry::default()
+        }
+    }
+
     pub fn try_send_hello(&mut self) -> Result<(), BindingError> {
         queue_control(
             &mut self.outbox,
-            Message::Hello(ProtocolHello::default()),
+            Message::Hello(ProtocolHello::new(self.authorization.link_session_id())),
             self.config,
         )?;
         flush_control(&mut self.connection, &mut self.outbox)
@@ -349,6 +469,12 @@ impl<C: Connection> Publisher<C> {
             active.session_id == session_id && generation <= active.generation
         }) {
             return Err(BindingError::InvalidState);
+        }
+        if layout.target_fps == 0 || layout.target_fps > self.config.max_target_fps {
+            return Err(BindingError::RateLimited);
+        }
+        if self.active.is_some() {
+            self.note_reconfigure(Instant::now())?;
         }
         let active_layout = ActiveLayout::negotiate(
             layout_id,
@@ -384,12 +510,15 @@ impl<C: Connection> Publisher<C> {
         producer_now_ns: u64,
     ) -> Result<Option<PublisherEvent>, BindingError> {
         flush_control(&mut self.connection, &mut self.outbox)?;
+        if self.transport_mode == TrackingTransportMode::ReliableLatestOnly {
+            self.reliable.flush(&mut self.connection)?;
+        }
         let Some(message) = receive_control(&mut self.connection, self.config)? else {
             return Ok(None);
         };
         let event = match message {
             Message::Hello(hello) => {
-                validate_hello(hello)?;
+                validate_hello(hello, self.authorization.link_session_id())?;
                 self.remote_hello = true;
                 PublisherEvent::HelloAccepted
             }
@@ -437,6 +566,7 @@ impl<C: Connection> Publisher<C> {
                 ];
                 self.compact_bytes.resize(pending.layout.frame_len(), 0);
                 self.active = Some(pending);
+                self.last_published_sequence = None;
                 self.playback = PlaybackState::Paused;
                 PublisherEvent::SessionReady
             }
@@ -486,9 +616,23 @@ impl<C: Connection> Publisher<C> {
         if self.playback != PlaybackState::Running {
             return Err(BindingError::InvalidState);
         }
+        let target_fps = self
+            .active
+            .as_ref()
+            .ok_or(BindingError::InvalidState)?
+            .layout
+            .proposal()
+            .target_fps;
+        self.note_frame(Instant::now(), target_fps)?;
         let active = self.active.as_ref().ok_or(BindingError::InvalidState)?;
         if result.session_id != active.session_id || result.generation != active.generation {
             return Err(BindingError::InvalidState);
+        }
+        if self
+            .last_published_sequence
+            .is_some_and(|sequence| result.sequence <= sequence)
+        {
+            return Err(BindingError::ReplayOrDuplicate);
         }
         active.descriptor.validate_result(result)?;
 
@@ -512,6 +656,68 @@ impl<C: Connection> Publisher<C> {
             },
             &mut self.compact_bytes,
         )?;
+        let deadline = Instant::now() + self.config.result_deadline;
+        let core_wire = if result.geometry.face_landmarks.is_empty() {
+            CanonicalCodec::encode(result)?
+        } else {
+            let mut core = result.clone();
+            core.geometry.face_landmarks.clear();
+            CanonicalCodec::encode(&core)?
+        };
+        let cadence_due = self
+            .config
+            .geometry_cadence
+            .is_some_and(|cadence| result.sequence % cadence == 0);
+        let send_geometry = self.geometry_requested || cadence_due;
+        let geometry_wire = if send_geometry {
+            self.geometry_requested = false;
+            Some(CanonicalCodec::encode(result)?)
+        } else {
+            None
+        };
+
+        if self.transport_mode == TrackingTransportMode::ReliableLatestOnly {
+            self.reliable.flush(&mut self.connection)?;
+            let compact = self.reliable.enqueue(
+                COMPACT_RIG_FLOW,
+                result.generation,
+                result.sequence,
+                RealtimePriority::Critical,
+                &self.compact_bytes,
+                self.config.max_tracking_frame_bytes,
+            )?;
+            let core = single_frame_batch(self.reliable.enqueue(
+                CORE_RESULT_FLOW,
+                result.generation,
+                result.sequence,
+                RealtimePriority::High,
+                &core_wire,
+                self.config.max_tracking_frame_bytes,
+            )?);
+            let geometry = geometry_wire
+                .as_deref()
+                .map(|wire| {
+                    self.reliable
+                        .enqueue(
+                            GEOMETRY_FLOW,
+                            result.generation,
+                            result.sequence,
+                            RealtimePriority::Disposable,
+                            wire,
+                            self.config.max_tracking_frame_bytes,
+                        )
+                        .map(single_frame_batch)
+                })
+                .transpose()?;
+            self.reliable.flush(&mut self.connection)?;
+            self.last_published_sequence = Some(result.sequence);
+            return Ok(PublishOutcome {
+                compact,
+                core,
+                geometry,
+            });
+        }
+
         let max_payload = self
             .connection
             .max_datagram_payload()
@@ -519,7 +725,6 @@ impl<C: Connection> Publisher<C> {
         if self.compact_bytes.len() > max_payload {
             return Err(BindingError::PayloadLimit);
         }
-        let deadline = Instant::now() + self.config.result_deadline;
         let compact = self.connection.try_send_latest(RealtimeDatagram {
             flow: COMPACT_RIG_FLOW,
             generation: result.generation,
@@ -528,14 +733,6 @@ impl<C: Connection> Publisher<C> {
             priority: RealtimePriority::Critical,
             payload: &self.compact_bytes,
         })?;
-
-        let core_wire = if result.geometry.face_landmarks.is_empty() {
-            CanonicalCodec::encode(result)?
-        } else {
-            let mut core = result.clone();
-            core.geometry.face_landmarks.clear();
-            CanonicalCodec::encode(&core)?
-        };
         let core = send_fragmented(
             &mut self.connection,
             FragmentSend {
@@ -549,31 +746,25 @@ impl<C: Connection> Publisher<C> {
             },
             &mut self.fragment_scratch,
         )?;
-
-        let cadence_due = self
-            .config
-            .geometry_cadence
-            .is_some_and(|cadence| result.sequence % cadence == 0);
-        let send_geometry = self.geometry_requested || cadence_due;
-        let geometry = if send_geometry {
-            self.geometry_requested = false;
-            let wire = CanonicalCodec::encode(result)?;
-            Some(send_fragmented(
-                &mut self.connection,
-                FragmentSend {
-                    flow: GEOMETRY_FLOW,
-                    generation: result.generation,
-                    sequence: result.sequence,
-                    deadline,
-                    priority: RealtimePriority::Disposable,
-                    payload: &wire,
-                    config: self.config,
-                },
-                &mut self.fragment_scratch,
-            )?)
-        } else {
-            None
-        };
+        let geometry = geometry_wire
+            .as_deref()
+            .map(|wire| {
+                send_fragmented(
+                    &mut self.connection,
+                    FragmentSend {
+                        flow: GEOMETRY_FLOW,
+                        generation: result.generation,
+                        sequence: result.sequence,
+                        deadline,
+                        priority: RealtimePriority::Disposable,
+                        payload: wire,
+                        config: self.config,
+                    },
+                    &mut self.fragment_scratch,
+                )
+            })
+            .transpose()?;
+        self.last_published_sequence = Some(result.sequence);
         Ok(PublishOutcome {
             compact,
             core,
@@ -581,16 +772,79 @@ impl<C: Connection> Publisher<C> {
         })
     }
 
-    pub fn reset_for_reconnect(&mut self) {
-        self.connection.reset_realtime_session();
+    pub fn reset_for_reconnect(
+        &mut self,
+        connection: C,
+        authorization: NtpAuthorization,
+    ) -> Result<(), BindingError> {
+        validate_connection_authorization(&connection, &authorization, NtpRole::Publisher)?;
+        if authorization.link_session_id() == self.authorization.link_session_id() {
+            return Err(BindingError::SessionBindingMismatch);
+        }
+        self.connection = connection;
+        self.authorization = authorization;
+        self.transport_mode = if self.connection.max_datagram_payload().is_some() {
+            TrackingTransportMode::Datagram
+        } else {
+            TrackingTransportMode::ReliableLatestOnly
+        };
         self.remote_hello = false;
         self.pending = None;
         self.pending_accepted = false;
         self.active = None;
         self.playback = PlaybackState::Stopped;
         self.outbox.clear();
+        self.reliable.clear();
+        self.reconfigure_times.clear();
+        self.frame_window_started = Instant::now();
+        self.frame_window_count = 0;
+        self.sustained_window_started = Instant::now();
+        self.sustained_frame_count = 0;
+        self.rate_limited = 0;
+        self.last_published_sequence = None;
         self.geometry_requested = false;
         self.last_report = None;
+        Ok(())
+    }
+
+    fn note_reconfigure(&mut self, now: Instant) -> Result<(), BindingError> {
+        let cutoff = now.checked_sub(Duration::from_secs(60)).unwrap_or(now);
+        while self
+            .reconfigure_times
+            .front()
+            .is_some_and(|timestamp| *timestamp <= cutoff)
+        {
+            self.reconfigure_times.pop_front();
+        }
+        if self.reconfigure_times.len() >= usize::from(self.config.max_reconfigure_per_minute) {
+            self.rate_limited = self.rate_limited.saturating_add(1);
+            return Err(BindingError::RateLimited);
+        }
+        self.reconfigure_times.push_back(now);
+        Ok(())
+    }
+
+    fn note_frame(&mut self, now: Instant, target_fps: u16) -> Result<(), BindingError> {
+        if now.duration_since(self.frame_window_started) >= Duration::from_secs(1) {
+            self.frame_window_started = now;
+            self.frame_window_count = 0;
+        }
+        if self.frame_window_count >= self.config.max_burst_fps {
+            self.rate_limited = self.rate_limited.saturating_add(1);
+            return Err(BindingError::RateLimited);
+        }
+        if now.duration_since(self.sustained_window_started) >= Duration::from_secs(10) {
+            self.sustained_window_started = now;
+            self.sustained_frame_count = 0;
+        }
+        let sustained_limit = u32::from(target_fps).saturating_mul(10);
+        if self.sustained_frame_count >= sustained_limit {
+            self.rate_limited = self.rate_limited.saturating_add(1);
+            return Err(BindingError::RateLimited);
+        }
+        self.frame_window_count = self.frame_window_count.saturating_add(1);
+        self.sustained_frame_count = self.sustained_frame_count.saturating_add(1);
+        Ok(())
     }
 }
 
@@ -598,6 +852,7 @@ struct SubscriberSession {
     descriptor: NanaTrackingDescriptor,
     session_id: SessionId,
     generation: u32,
+    layout: ActiveLayout,
     topology: GeometryTopology,
     compact_guard: CompactStreamGuard,
     result_guard: ResultStreamGuard,
@@ -617,6 +872,8 @@ struct GeometryCache {
 
 pub struct Subscriber<C: Connection> {
     connection: C,
+    authorization: NtpAuthorization,
+    transport_mode: TrackingTransportMode,
     config: BindingConfig,
     remote_hello: bool,
     negotiator: LayoutNegotiator,
@@ -625,20 +882,42 @@ pub struct Subscriber<C: Connection> {
     outbox: VecDeque<Vec<u8>>,
     core_reassembly: Reassembler,
     geometry_reassembly: Reassembler,
+    reliable: reliable::ReliableLatestReceiver,
     geometry_cache: Option<GeometryCache>,
     report: ReceiverReport,
     previous_age_ns: Option<u64>,
     clock: ClockSynchronizer,
+    reconfigure_times: VecDeque<Instant>,
+    receive_window_started: Instant,
+    receive_window_count: u16,
+    sustained_receive_window_started: Instant,
+    sustained_receive_count: u32,
+    rate_limited: u64,
+    protocol_violations: u16,
+    malformed_frames: u64,
+    fused: bool,
 }
 
 impl<C: Connection> Subscriber<C> {
-    pub fn new(connection: C, config: BindingConfig) -> Result<Self, BindingError> {
+    pub fn new(
+        connection: C,
+        authorization: NtpAuthorization,
+        config: BindingConfig,
+    ) -> Result<Self, BindingError> {
         let config = config.validate()?;
-        if connection.max_datagram_payload().is_none() {
-            return Err(BindingError::DatagramsUnsupported);
+        validate_connection_authorization(&connection, &authorization, NtpRole::Subscriber)?;
+        let transport_mode = if connection.max_datagram_payload().is_some() {
+            TrackingTransportMode::Datagram
+        } else {
+            TrackingTransportMode::ReliableLatestOnly
+        };
+        if !connection.metadata().reliable {
+            return Err(BindingError::InvalidState);
         }
         Ok(Self {
             connection,
+            authorization,
+            transport_mode,
             config,
             remote_hello: false,
             negotiator: LayoutNegotiator::new(HandshakeLimits::default())?,
@@ -647,10 +926,20 @@ impl<C: Connection> Subscriber<C> {
             outbox: VecDeque::with_capacity(config.max_pending_control),
             core_reassembly: Reassembler::new(),
             geometry_reassembly: Reassembler::new(),
+            reliable: reliable::ReliableLatestReceiver::default(),
             geometry_cache: None,
             report: ReceiverReport::default(),
             previous_age_ns: None,
             clock: ClockSynchronizer::default(),
+            reconfigure_times: VecDeque::new(),
+            receive_window_started: Instant::now(),
+            receive_window_count: 0,
+            sustained_receive_window_started: Instant::now(),
+            sustained_receive_count: 0,
+            rate_limited: 0,
+            protocol_violations: 0,
+            malformed_frames: 0,
+            fused: false,
         })
     }
 
@@ -660,10 +949,6 @@ impl<C: Connection> Subscriber<C> {
 
     pub fn connection(&self) -> &C {
         &self.connection
-    }
-
-    pub fn connection_mut(&mut self) -> &mut C {
-        &mut self.connection
     }
 
     pub fn descriptor(&self) -> Option<&NanaTrackingDescriptor> {
@@ -678,10 +963,41 @@ impl<C: Connection> Subscriber<C> {
         self.report
     }
 
+    pub const fn transport_mode(&self) -> TrackingTransportMode {
+        self.transport_mode
+    }
+
+    pub fn bound_session(&self) -> Option<BoundNtpSession> {
+        self.active.as_ref().map(|active| BoundNtpSession {
+            peer_id: self.authorization.peer_id(),
+            link_session_id: self.authorization.link_session_id(),
+            ntp_session_id: active.session_id,
+            generation: active.generation,
+            layout_id: active.layout.layout_id(),
+            layout_hash: active.layout.confirmation().layout_hash,
+            expected_frame_len: u32::try_from(active.layout.frame_len())
+                .expect("validated NTP frame length fits u32"),
+            value_encoding: active.layout.proposal().value_encoding,
+            target_fps: active.layout.proposal().target_fps,
+            transport_mode: self.transport_mode,
+        })
+    }
+
+    pub fn telemetry(&self) -> TrackingTelemetry {
+        TrackingTelemetry {
+            queue_replacements: self.reliable.replacements(),
+            rate_limited: self.rate_limited,
+            malformed_frames: self.malformed_frames,
+            fuse_tripped: self.fused,
+            replay_dropped: self.reliable.stale_discarded(),
+            ..TrackingTelemetry::default()
+        }
+    }
+
     pub fn try_send_hello(&mut self) -> Result<(), BindingError> {
         queue_control(
             &mut self.outbox,
-            Message::Hello(ProtocolHello::default()),
+            Message::Hello(ProtocolHello::new(self.authorization.link_session_id())),
             self.config,
         )?;
         flush_control(&mut self.connection, &mut self.outbox)
@@ -738,13 +1054,16 @@ impl<C: Connection> Subscriber<C> {
         };
         let event = match message {
             Message::Hello(hello) => {
-                validate_hello(hello)?;
+                validate_hello(hello, self.authorization.link_session_id())?;
                 self.remote_hello = true;
                 SubscriberEvent::HelloAccepted
             }
             Message::SessionProposal(proposal) => {
                 if !self.remote_hello || self.pending.is_some() {
                     return Err(BindingError::InvalidState);
+                }
+                if self.active.is_some() {
+                    self.note_reconfigure(Instant::now())?;
                 }
                 if self.active.as_ref().is_some_and(|active| {
                     active.session_id == proposal.session_id
@@ -772,7 +1091,7 @@ impl<C: Connection> Subscriber<C> {
                 let compact_guard = CompactStreamGuard::confirmed(
                     pending.proposal.session_id,
                     pending.proposal.generation,
-                    layout,
+                    layout.clone(),
                     confirm,
                     self.config.compact_policy,
                 )?;
@@ -784,6 +1103,7 @@ impl<C: Connection> Subscriber<C> {
                     descriptor: pending.proposal.descriptor,
                     session_id: pending.proposal.session_id,
                     generation: pending.proposal.generation,
+                    layout: layout.clone(),
                     topology: pending.proposal.topology,
                     compact_guard,
                     result_guard,
@@ -823,19 +1143,63 @@ impl<C: Connection> Subscriber<C> {
     pub fn poll_realtime<F>(
         &mut self,
         clock: ProducerClockEstimate,
+        on_compact: F,
+    ) -> Result<(ReceiveOutcome, Option<NanaTrackingResult>), BindingError>
+    where
+        F: FnMut(CompactFrameRef<'_>),
+    {
+        if self.fused {
+            return Err(BindingError::ChannelFused);
+        }
+        let result = self.poll_realtime_inner(clock, on_compact);
+        if result.as_ref().is_err_and(is_protocol_violation) {
+            self.protocol_violations = self.protocol_violations.saturating_add(1);
+            self.malformed_frames = self.malformed_frames.saturating_add(1);
+            if self.protocol_violations >= self.config.max_protocol_violations {
+                self.fused = true;
+            }
+        }
+        result
+    }
+
+    fn poll_realtime_inner<F>(
+        &mut self,
+        clock: ProducerClockEstimate,
         mut on_compact: F,
     ) -> Result<(ReceiveOutcome, Option<NanaTrackingResult>), BindingError>
     where
         F: FnMut(CompactFrameRef<'_>),
     {
-        let message = match self.connection.try_receive_realtime() {
-            Ok(Some(message)) => message,
-            Err(error) if error.kind == TransportErrorKind::WouldBlock => {
-                return Ok((ReceiveOutcome::Idle, None));
+        let message = if self.transport_mode == TrackingTransportMode::Datagram {
+            match self.connection.try_receive_realtime() {
+                Ok(message) => message,
+                Err(error) if error.kind == TransportErrorKind::WouldBlock => None,
+                Err(error) => return Err(error.into()),
             }
-            Ok(None) => return Ok((ReceiveOutcome::Idle, None)),
-            Err(error) => return Err(error.into()),
+        } else {
+            self.reliable.poll(
+                &mut self.connection,
+                self.config.max_tracking_frame_bytes,
+                self.config.max_receive_frames_per_poll,
+            )?
         };
+        let Some(message) = message else {
+            return Ok((ReceiveOutcome::Idle, None));
+        };
+        if message.flow == COMPACT_RIG_FLOW {
+            let target_fps = self
+                .active
+                .as_ref()
+                .ok_or(BindingError::InvalidState)?
+                .layout
+                .proposal()
+                .target_fps;
+            self.note_received_frame(Instant::now(), target_fps)?;
+        }
+        if message.payload.len() > self.config.max_tracking_frame_bytes {
+            self.report.dropped = self.report.dropped.saturating_add(1);
+            return Err(BindingError::PayloadLimit);
+        }
         let active_generation = self
             .active
             .as_ref()
@@ -848,6 +1212,16 @@ impl<C: Connection> Subscriber<C> {
 
         match message.flow {
             COMPACT_RIG_FLOW => {
+                let expected_frame_len = self
+                    .active
+                    .as_ref()
+                    .ok_or(BindingError::InvalidState)?
+                    .layout
+                    .frame_len();
+                if message.payload.len() != expected_frame_len {
+                    self.report.dropped = self.report.dropped.saturating_add(1);
+                    return Err(BindingError::LayoutMismatch);
+                }
                 let age = {
                     let active = self.active.as_mut().ok_or(BindingError::InvalidState)?;
                     let frame = active.compact_guard.accept(&message.payload, clock)?;
@@ -863,22 +1237,28 @@ impl<C: Connection> Subscriber<C> {
                 Ok((ReceiveOutcome::Progress, None))
             }
             CORE_RESULT_FLOW => {
-                let outcome = self.core_reassembly.push(
-                    message.generation,
-                    message.sequence,
-                    &message.payload,
-                    self.config,
-                )?;
-                self.note_reassembly_replacement(&outcome);
-                let ReassemblyOutcome::Complete {
-                    generation,
-                    sequence,
-                    payload,
-                    ..
-                } = outcome
-                else {
-                    return Ok((ReceiveOutcome::Progress, None));
-                };
+                let (generation, sequence, payload) =
+                    if self.transport_mode == TrackingTransportMode::ReliableLatestOnly {
+                        (message.generation, message.sequence, message.payload)
+                    } else {
+                        let outcome = self.core_reassembly.push(
+                            message.generation,
+                            message.sequence,
+                            &message.payload,
+                            self.config,
+                        )?;
+                        self.note_reassembly_replacement(&outcome);
+                        let ReassemblyOutcome::Complete {
+                            generation,
+                            sequence,
+                            payload,
+                            ..
+                        } = outcome
+                        else {
+                            return Ok((ReceiveOutcome::Progress, None));
+                        };
+                        (generation, sequence, payload)
+                    };
                 let mut result = NanaTrackingResult::decode_wire(&payload)?;
                 if result.generation != generation || result.sequence != sequence {
                     return Err(BindingError::InvalidFragment);
@@ -916,20 +1296,27 @@ impl<C: Connection> Subscriber<C> {
                 Ok((ReceiveOutcome::Progress, Some(result)))
             }
             GEOMETRY_FLOW => {
-                let outcome = self.geometry_reassembly.push(
-                    message.generation,
-                    message.sequence,
-                    &message.payload,
-                    self.config,
-                )?;
-                self.note_reassembly_replacement(&outcome);
-                if let ReassemblyOutcome::Complete {
-                    generation,
-                    sequence,
-                    payload,
-                    ..
-                } = outcome
-                {
+                let complete = if self.transport_mode == TrackingTransportMode::ReliableLatestOnly {
+                    Some((message.generation, message.sequence, message.payload))
+                } else {
+                    let outcome = self.geometry_reassembly.push(
+                        message.generation,
+                        message.sequence,
+                        &message.payload,
+                        self.config,
+                    )?;
+                    self.note_reassembly_replacement(&outcome);
+                    match outcome {
+                        ReassemblyOutcome::Complete {
+                            generation,
+                            sequence,
+                            payload,
+                            ..
+                        } => Some((generation, sequence, payload)),
+                        ReassemblyOutcome::Pending { .. } | ReassemblyOutcome::IgnoredOld => None,
+                    }
+                };
+                if let Some((generation, sequence, payload)) = complete {
                     let result = NanaTrackingResult::decode_wire(&payload)?;
                     let active = self.active.as_ref().ok_or(BindingError::InvalidState)?;
                     if result.session_id != active.session_id
@@ -952,8 +1339,22 @@ impl<C: Connection> Subscriber<C> {
         }
     }
 
-    pub fn reset_for_reconnect(&mut self) -> Result<(), BindingError> {
-        self.connection.reset_realtime_session();
+    pub fn reset_for_reconnect(
+        &mut self,
+        connection: C,
+        authorization: NtpAuthorization,
+    ) -> Result<(), BindingError> {
+        validate_connection_authorization(&connection, &authorization, NtpRole::Subscriber)?;
+        if authorization.link_session_id() == self.authorization.link_session_id() {
+            return Err(BindingError::SessionBindingMismatch);
+        }
+        self.connection = connection;
+        self.authorization = authorization;
+        self.transport_mode = if self.connection.max_datagram_payload().is_some() {
+            TrackingTransportMode::Datagram
+        } else {
+            TrackingTransportMode::ReliableLatestOnly
+        };
         self.remote_hello = false;
         self.negotiator = LayoutNegotiator::new(HandshakeLimits::default())?;
         self.pending = None;
@@ -961,10 +1362,62 @@ impl<C: Connection> Subscriber<C> {
         self.outbox.clear();
         self.core_reassembly.clear();
         self.geometry_reassembly.clear();
+        self.reliable.clear();
         self.geometry_cache = None;
         self.report = ReceiverReport::default();
         self.previous_age_ns = None;
         self.clock = ClockSynchronizer::default();
+        self.reconfigure_times.clear();
+        self.receive_window_started = Instant::now();
+        self.receive_window_count = 0;
+        self.sustained_receive_window_started = Instant::now();
+        self.sustained_receive_count = 0;
+        self.rate_limited = 0;
+        self.protocol_violations = 0;
+        self.malformed_frames = 0;
+        self.fused = false;
+        Ok(())
+    }
+
+    fn note_reconfigure(&mut self, now: Instant) -> Result<(), BindingError> {
+        let cutoff = now.checked_sub(Duration::from_secs(60)).unwrap_or(now);
+        while self
+            .reconfigure_times
+            .front()
+            .is_some_and(|timestamp| *timestamp <= cutoff)
+        {
+            self.reconfigure_times.pop_front();
+        }
+        if self.reconfigure_times.len() >= usize::from(self.config.max_reconfigure_per_minute) {
+            self.rate_limited = self.rate_limited.saturating_add(1);
+            return Err(BindingError::RateLimited);
+        }
+        self.reconfigure_times.push_back(now);
+        Ok(())
+    }
+
+    fn note_received_frame(&mut self, now: Instant, target_fps: u16) -> Result<(), BindingError> {
+        if now.duration_since(self.receive_window_started) >= Duration::from_secs(1) {
+            self.receive_window_started = now;
+            self.receive_window_count = 0;
+        }
+        if self.receive_window_count >= self.config.max_burst_fps {
+            self.rate_limited = self.rate_limited.saturating_add(1);
+            self.report.dropped = self.report.dropped.saturating_add(1);
+            return Err(BindingError::RateLimited);
+        }
+        if now.duration_since(self.sustained_receive_window_started) >= Duration::from_secs(10) {
+            self.sustained_receive_window_started = now;
+            self.sustained_receive_count = 0;
+        }
+        let sustained_limit = u32::from(target_fps).saturating_mul(10);
+        if self.sustained_receive_count >= sustained_limit {
+            self.rate_limited = self.rate_limited.saturating_add(1);
+            self.report.dropped = self.report.dropped.saturating_add(1);
+            return Err(BindingError::RateLimited);
+        }
+        self.receive_window_count = self.receive_window_count.saturating_add(1);
+        self.sustained_receive_count = self.sustained_receive_count.saturating_add(1);
         Ok(())
     }
 
@@ -1106,10 +1559,80 @@ fn receive_control<C: Connection>(
     }
 }
 
-fn validate_hello(hello: ProtocolHello) -> Result<(), BindingError> {
-    if hello.minimum_version > 1 || hello.maximum_version < 1 {
+fn validate_hello(
+    hello: ProtocolHello,
+    expected_link_session_id: LinkSessionId,
+) -> Result<(), BindingError> {
+    if hello.minimum_version > 2 || hello.maximum_version < 2 {
         Err(BindingError::IncompatibleVersion)
+    } else if hello.link_session_id != expected_link_session_id {
+        Err(BindingError::SessionBindingMismatch)
     } else {
         Ok(())
+    }
+}
+
+fn validate_connection_authorization<C: Connection>(
+    connection: &C,
+    authorization: &NtpAuthorization,
+    expected_role: NtpRole,
+) -> Result<(), BindingError> {
+    if authorization.role() != expected_role {
+        return Err(BindingError::Unauthorized);
+    }
+    if connection
+        .metadata()
+        .peer_hint
+        .is_some_and(|peer| peer != authorization.peer_id())
+    {
+        return Err(BindingError::SessionBindingMismatch);
+    }
+    Ok(())
+}
+
+fn is_protocol_violation(error: &BindingError) -> bool {
+    matches!(
+        error,
+        BindingError::Codec(_)
+            | BindingError::Contract(_)
+            | BindingError::Compact(_)
+            | BindingError::CompactStream(_)
+            | BindingError::Stream(_)
+            | BindingError::InvalidFragment
+            | BindingError::LayoutMismatch
+            | BindingError::PayloadLimit
+    )
+}
+
+fn bound_session(
+    authorization: &NtpAuthorization,
+    active: &SessionDefinition,
+    transport_mode: TrackingTransportMode,
+) -> BoundNtpSession {
+    BoundNtpSession {
+        peer_id: authorization.peer_id(),
+        link_session_id: authorization.link_session_id(),
+        ntp_session_id: active.session_id,
+        generation: active.generation,
+        layout_id: active.layout.layout_id(),
+        layout_hash: active.layout.confirmation().layout_hash,
+        expected_frame_len: u32::try_from(active.layout.frame_len())
+            .expect("validated NTP frame length fits u32"),
+        value_encoding: active.layout.proposal().value_encoding,
+        target_fps: active.layout.proposal().target_fps,
+        transport_mode,
+    }
+}
+
+fn single_frame_batch(outcome: SendOutcome) -> FragmentBatchOutcome {
+    FragmentBatchOutcome {
+        fragments: 1,
+        enqueued: usize::from(matches!(outcome, SendOutcome::Enqueued)),
+        replaced: usize::from(matches!(outcome, SendOutcome::ReplacedOlder)),
+        expired: usize::from(matches!(outcome, SendOutcome::DroppedExpired)),
+        congested: usize::from(matches!(
+            outcome,
+            SendOutcome::DroppedCongested | SendOutcome::Unsupported
+        )),
     }
 }

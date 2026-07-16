@@ -56,6 +56,10 @@ impl Connection for LocalConnection {
         self.inner.try_send_control(message)
     }
 
+    fn try_receive_control(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        self.inner.try_receive_control()
+    }
+
     fn try_receive(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
         self.inner.try_receive()
     }

@@ -63,8 +63,10 @@ policy filters unacceptable candidates before the first attempt.
 
 `TransportBudget` bounds active connections, concurrent QUIC streams, frame bytes, control/data/send
 queues, receive queues, send/receive byte rates, and idle time. Control and data have independent
-queue and rate fields. The shared framing bridge always polls reserved control work before data; one
-full data queue therefore cannot prevent enqueueing ping, cancel, drain, or close. A deployment should
+send and receive lanes. The receiver identifies the control lane from the existing versioned
+`MLCS + ProtocolId` envelope, so the outer four-byte length framing remains wire-compatible. The
+shared framing bridge always polls reserved control work before data; one full data queue
+therefore cannot prevent enqueueing or receiving ping, cancel, drain, or close. A deployment should
 also choose a maximum data frame size small enough for its control-latency target on stream transports.
 
 Listeners accept only on demand and refuse work after `max_connections`; there is no unbounded accept

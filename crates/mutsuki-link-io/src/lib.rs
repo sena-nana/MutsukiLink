@@ -18,6 +18,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+const CONTROL_STREAM_PREFIX: [u8; 4] = *b"MLCS";
+
 #[derive(Clone, Debug, Default)]
 pub struct ConnectionCounter(Arc<AtomicUsize>);
 
@@ -51,6 +53,7 @@ pub struct FramedConnection {
     budget: TransportBudget,
     control_tx: Option<mpsc::Sender<Vec<u8>>>,
     data_tx: Option<mpsc::Sender<Vec<u8>>>,
+    control_receive_rx: mpsc::Receiver<Vec<u8>>,
     receive_rx: mpsc::Receiver<Vec<u8>>,
     writer: JoinHandle<()>,
     reader: JoinHandle<()>,
@@ -93,6 +96,7 @@ where
     })?;
     let (control_tx, control_rx) = mpsc::channel(budget.control_queue_capacity);
     let (data_tx, data_rx) = mpsc::channel(budget.data_queue_capacity);
+    let (control_receive_tx, control_receive_rx) = mpsc::channel(budget.control_queue_capacity);
     let (receive_tx, receive_rx) = mpsc::channel(budget.receive_queue_capacity);
     let terminal_error = Arc::new(Mutex::new(None));
     let writer_error = Arc::clone(&terminal_error);
@@ -105,13 +109,20 @@ where
         budget,
         writer_error,
     ));
-    let reader_task = tokio::spawn(read_loop(reader, receive_tx, budget, reader_error));
+    let reader_task = tokio::spawn(read_loop(
+        reader,
+        control_receive_tx,
+        receive_tx,
+        budget,
+        reader_error,
+    ));
 
     Ok(FramedConnection {
         metadata,
         budget,
         control_tx: Some(control_tx),
         data_tx: Some(data_tx),
+        control_receive_rx,
         receive_rx,
         writer: writer_task,
         reader: reader_task,
@@ -203,6 +214,34 @@ impl Connection for FramedConnection {
                     Err(TransportError::new(
                         TransportErrorKind::WouldBlock,
                         "no transport message is ready",
+                    ))
+                }
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => Err(self.terminal_or(
+                TransportError::new(TransportErrorKind::Closed, "transport read side is closed"),
+            )),
+        }
+    }
+
+    fn try_receive_control(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        if self.read_closed {
+            return Err(TransportError::new(
+                TransportErrorKind::Closed,
+                "transport read side is closed",
+            ));
+        }
+        match self.control_receive_rx.try_recv() {
+            Ok(message) => Ok(Some(message)),
+            Err(mpsc::error::TryRecvError::Empty) => {
+                if self.reader.is_finished() {
+                    Err(self.terminal_or(TransportError::new(
+                        TransportErrorKind::Closed,
+                        "transport read side is closed",
+                    )))
+                } else {
+                    Err(TransportError::new(
+                        TransportErrorKind::WouldBlock,
+                        "no control message is ready",
                     ))
                 }
             }
@@ -309,6 +348,7 @@ where
 
 async fn read_loop<R>(
     mut reader: R,
+    control_receive_tx: mpsc::Sender<Vec<u8>>,
     receive_tx: mpsc::Sender<Vec<u8>>,
     budget: TransportBudget,
     terminal_error: Arc<Mutex<Option<TransportError>>>,
@@ -342,7 +382,13 @@ async fn read_loop<R>(
             return;
         }
         throttle(budget.receive_bytes_per_second, length).await;
-        if receive_tx.send(message).await.is_err() {
+        let control = message.starts_with(&CONTROL_STREAM_PREFIX);
+        let target = if control {
+            &control_receive_tx
+        } else {
+            &receive_tx
+        };
+        if target.send(message).await.is_err() {
             return;
         }
     }
@@ -423,22 +469,18 @@ mod tests {
         let mut sender = spawn_framed_connection(left, metadata(true), budget, None).unwrap();
         let mut receiver = spawn_framed_connection(right, metadata(false), budget, None).unwrap();
         sender.try_send(b"data").unwrap();
-        sender.try_send_control(b"ping").unwrap();
+        let protocol = mutsuki_link_core::ProtocolId::new("test.control").unwrap();
+        sender
+            .open_control_stream(protocol.clone())
+            .unwrap()
+            .try_send(b"ping")
+            .unwrap();
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-        let mut messages = Vec::new();
-        while messages.len() < 2 {
-            match receiver.try_receive() {
-                Ok(Some(message)) => messages.push(message),
-                Err(error) if error.kind == TransportErrorKind::WouldBlock => {
-                    assert!(tokio::time::Instant::now() < deadline);
-                    tokio::task::yield_now().await;
-                }
-                result => panic!("unexpected receive result: {result:?}"),
-            }
-        }
-        assert_eq!(messages[0], b"ping");
-        assert_eq!(messages[1], b"data");
+        assert_eq!(
+            wait_for_protocol_control(&mut receiver, protocol).await,
+            b"ping"
+        );
+        assert_eq!(wait_for_message(&mut receiver).await, b"data");
     }
 
     #[tokio::test]
@@ -479,9 +521,17 @@ mod tests {
         let mut sender = spawn_framed_connection(left, metadata(true), budget, None).unwrap();
         let mut receiver = spawn_framed_connection(right, metadata(false), budget, None).unwrap();
         sender.try_send(&[1; 100]).unwrap();
-        sender.try_send_control(b"cancel").unwrap();
+        let protocol = mutsuki_link_core::ProtocolId::new("test.control").unwrap();
+        sender
+            .open_control_stream(protocol.clone())
+            .unwrap()
+            .try_send(b"cancel")
+            .unwrap();
         let started = tokio::time::Instant::now();
-        assert_eq!(wait_for_message(&mut receiver).await, b"cancel");
+        assert_eq!(
+            wait_for_protocol_control(&mut receiver, protocol).await,
+            b"cancel"
+        );
         assert!(started.elapsed() < Duration::from_millis(500));
         assert_eq!(wait_for_message(&mut receiver).await, vec![1; 100]);
         assert!(started.elapsed() >= Duration::from_millis(900));
@@ -497,9 +547,17 @@ mod tests {
         let mut sender = spawn_framed_connection(left, metadata(true), budget, None).unwrap();
         let mut receiver = spawn_framed_connection(right, metadata(false), budget, None).unwrap();
         sender.try_send(b"data").unwrap();
-        sender.try_send_control(b"control").unwrap();
+        let protocol = mutsuki_link_core::ProtocolId::new("test.control").unwrap();
+        sender
+            .open_control_stream(protocol.clone())
+            .unwrap()
+            .try_send(b"control")
+            .unwrap();
         sender.close_write().unwrap();
-        assert_eq!(wait_for_message(&mut receiver).await, b"control");
+        assert_eq!(
+            wait_for_protocol_control(&mut receiver, protocol).await,
+            b"control"
+        );
         assert_eq!(wait_for_message(&mut receiver).await, b"data");
         assert_eq!(
             sender.try_send(b"late").unwrap_err().kind,
@@ -528,6 +586,27 @@ mod tests {
                     tokio::task::yield_now().await;
                 }
                 result => panic!("unexpected receive result: {result:?}"),
+            }
+        }
+    }
+
+    async fn wait_for_protocol_control(
+        connection: &mut FramedConnection,
+        protocol: mutsuki_link_core::ProtocolId,
+    ) -> Vec<u8> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match connection
+                .open_control_stream(protocol.clone())
+                .unwrap()
+                .try_receive()
+            {
+                Ok(Some(message)) => return message,
+                Err(error) if error.kind == TransportErrorKind::WouldBlock => {
+                    assert!(tokio::time::Instant::now() < deadline);
+                    tokio::task::yield_now().await;
+                }
+                result => panic!("unexpected control receive result: {result:?}"),
             }
         }
     }

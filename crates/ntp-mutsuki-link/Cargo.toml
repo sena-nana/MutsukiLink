@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 mutsuki-link-core = { version = "0.1.0", path = "../mutsuki-link-core" }
+mutsuki-link-pairing = { version = "0.1.0", path = "../mutsuki-link-pairing" }
 nana-tracking-protocol.workspace = true
 
 [dev-dependencies]

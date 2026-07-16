@@ -92,6 +92,8 @@ fn two_devices_pair_persist_trust_revoke_remove_and_rotate() {
     let permissions = BTreeSet::from([
         LinkPermission::Connect,
         LinkPermission::OpenNamespace("mutsuki.lilia".to_owned()),
+        LinkPermission::TrackingPublish,
+        LinkPermission::TrackingNegotiate,
     ]);
     let record = initiator
         .trust_record("phone".to_owned(), permissions, 1_002)
@@ -114,6 +116,10 @@ fn two_devices_pair_persist_trust_revoke_remove_and_rotate() {
     drop(store);
 
     let mut store = FileTrustStore::open(&path).unwrap();
+    assert_eq!(
+        store.get(&bob.peer_id).unwrap().unwrap().permissions,
+        record.permissions
+    );
     assert_eq!(
         authorize_trusted_reconnect(&store, &bob.peer_id, &bob.public_key)
             .unwrap()

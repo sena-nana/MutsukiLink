@@ -468,6 +468,7 @@ name = "ntp-mutsuki-link"
 version = "0.1.0"
 dependencies = [
  "mutsuki-link-core",
+ "mutsuki-link-pairing",
  "mutsuki-link-quic",
  "nana-tracking-protocol",
  "quinn",

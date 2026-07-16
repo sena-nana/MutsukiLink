@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "issue": "sena-nana/MutsukiLink#17",
+  "date": "2026-07-16",
+  "platform": "macOS local host, aarch64",
+  "smoke_only": true,
+  "claim_boundary": "Synthetic in-process memory transport and localhost QUIC only; not Wi-Fi, USB, iOS camera, Windows, or production latency evidence",
+  "protocol": {
+    "namespace": "nana.tracking.remote.v2",
+    "ntp_revision": "919f7f23c246c64c0ea36742a5813899903dadb4",
+    "link_session_bound_in_hello": true,
+    "framework_types_at_boundary": false
+  },
+  "authorization": {
+    "requires_authenticated_session": true,
+    "scopes": [
+      "tracking.publish",
+      "tracking.subscribe",
+      "tracking.negotiate",
+      "tracking.calibration.write"
+    ],
+    "direction_and_negotiate_denial_tested": true,
+    "revoked_trust_record_denied": true,
+    "different_link_session_rejected_before_layout": true,
+    "zero_rtt_mutation_enabled": false
+  },
+  "reliable_latest_only": {
+    "wire_header_bytes": 23,
+    "transport_data_queue_capacity": 1,
+    "logical_flow_slots": 3,
+    "replace_pending_observed": true,
+    "steady_sender_buffer_growths": 0,
+    "receiver_payload_copy_after_transport": false,
+    "control_pings_during_data_run": 10,
+    "control_starvation_observed": false
+  },
+  "release_smoke": {
+    "full_results": 120,
+    "total_microseconds": 14310,
+    "result_latency_microseconds": {
+      "p50": 128,
+      "p99": 263,
+      "max": 350
+    },
+    "command": "cargo test --release -p ntp-mutsuki-link --test remote_producer authenticated_reliable_fallback -- --nocapture"
+  },
+  "resource_boundaries": {
+    "control_and_data_receive_lanes_separate": true,
+    "exact_compact_length_checked_before_ntp_parser": true,
+    "fps_window_enforced": true,
+    "reconfigure_window_enforced": true,
+    "malformed_frame_fuse_tested": true,
+    "reconnect_requires_new_link_session_and_authorization": true,
+    "raw_face_media_api": false
+  },
+  "excluded_claims": [
+    "real Wi-Fi or USB performance",
+    "iOS producer camera quality",
+    "NanaLive recording equivalence",
+    "Windows runtime validation",
+    "production readiness"
+  ]
+}

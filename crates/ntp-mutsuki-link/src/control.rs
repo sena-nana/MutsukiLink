@@ -1,3 +1,4 @@
+use mutsuki_link_core::SessionId as LinkSessionId;
 use nana_tracking_protocol::{
     CanonicalCodec, LayoutAccept, LayoutConfirm, LayoutProposal, MAX_LAYOUT_SIGNALS,
     NanaTrackingDescriptor, QualityEncoding, SessionId, SignalId, TrackingProfile, ValueEncoding,
@@ -16,13 +17,16 @@ const MAX_CONTROL_BYTES: usize = 64 * 1024;
 pub struct ProtocolHello {
     pub minimum_version: u16,
     pub maximum_version: u16,
+    pub link_session_id: LinkSessionId,
 }
 
-impl Default for ProtocolHello {
-    fn default() -> Self {
+impl ProtocolHello {
+    #[must_use]
+    pub const fn new(link_session_id: LinkSessionId) -> Self {
         Self {
-            minimum_version: 1,
-            maximum_version: 1,
+            minimum_version: 2,
+            maximum_version: 2,
+            link_session_id,
         }
     }
 }
@@ -84,6 +88,7 @@ impl ControlMessage {
             Self::Hello(hello) => {
                 writer.u16(hello.minimum_version);
                 writer.u16(hello.maximum_version);
+                writer.bytes(hello.link_session_id.as_bytes());
             }
             Self::SessionProposal(proposal) => {
                 writer.bytes(&proposal.session_id.0);
@@ -157,6 +162,7 @@ impl ControlMessage {
             1 => Self::Hello(ProtocolHello {
                 minimum_version: reader.u16()?,
                 maximum_version: reader.u16()?,
+                link_session_id: LinkSessionId::from_bytes(reader.array()?),
             }),
             2 => {
                 let session_id = SessionId(reader.array()?);

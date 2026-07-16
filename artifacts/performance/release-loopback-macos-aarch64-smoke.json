@@ -5,106 +5,106 @@
   "operating_system": "macos",
   "architecture": "aarch64",
   "logical_cpus": 10,
-  "handshake_us": 38,
-  "idle_tick_ns": 3,
+  "handshake_us": 47,
+  "idle_tick_ns": 2,
   "typed_control_frame_bytes": 47,
-  "typed_control_roundtrips_per_second": 10946308,
+  "typed_control_roundtrips_per_second": 14681232,
   "baselines": [
     {
       "transport": "local",
-      "connect_us": 164,
-      "rtt_p50_us": 15,
-      "rtt_p95_us": 38,
-      "rtt_p99_us": 52,
-      "saturated_control_p99_us": 41,
+      "connect_us": 53,
+      "rtt_p50_us": 20,
+      "rtt_p95_us": 35,
+      "rtt_p99_us": 81,
+      "saturated_control_p99_us": 12,
       "throughput": [
         {
           "payload_bytes": 1024,
           "frames": 1024,
-          "bytes_per_second": 392137621
+          "bytes_per_second": 392872236
         },
         {
           "payload_bytes": 16384,
           "frames": 256,
-          "bytes_per_second": 1407595704
+          "bytes_per_second": 1909105143
         },
         {
           "payload_bytes": 65536,
           "frames": 64,
-          "bytes_per_second": 1807889655
+          "bytes_per_second": 2480369012
         },
         {
           "payload_bytes": 1048576,
           "frames": 8,
-          "bytes_per_second": 169125161
-        }
-      ],
-      "fixed_handle_bytes": 528,
-      "shutdown_us": 10
-    },
-    {
-      "transport": "tcp",
-      "connect_us": 233,
-      "rtt_p50_us": 64,
-      "rtt_p95_us": 71,
-      "rtt_p99_us": 78,
-      "saturated_control_p99_us": 402,
-      "throughput": [
-        {
-          "payload_bytes": 1024,
-          "frames": 1024,
-          "bytes_per_second": 178937883
-        },
-        {
-          "payload_bytes": 16384,
-          "frames": 256,
-          "bytes_per_second": 1961220338
-        },
-        {
-          "payload_bytes": 65536,
-          "frames": 64,
-          "bytes_per_second": 4574938917
-        },
-        {
-          "payload_bytes": 1048576,
-          "frames": 8,
-          "bytes_per_second": 3771856115
+          "bytes_per_second": 2859102931
         }
       ],
       "fixed_handle_bytes": 544,
+      "shutdown_us": 5
+    },
+    {
+      "transport": "tcp",
+      "connect_us": 199,
+      "rtt_p50_us": 61,
+      "rtt_p95_us": 75,
+      "rtt_p99_us": 94,
+      "saturated_control_p99_us": 66,
+      "throughput": [
+        {
+          "payload_bytes": 1024,
+          "frames": 1024,
+          "bytes_per_second": 160652060
+        },
+        {
+          "payload_bytes": 16384,
+          "frames": 256,
+          "bytes_per_second": 2236962133
+        },
+        {
+          "payload_bytes": 65536,
+          "frames": 64,
+          "bytes_per_second": 4718002249
+        },
+        {
+          "payload_bytes": 1048576,
+          "frames": 8,
+          "bytes_per_second": 6487709203
+        }
+      ],
+      "fixed_handle_bytes": 560,
       "shutdown_us": 2
     },
     {
       "transport": "quic",
-      "connect_us": 1131,
-      "rtt_p50_us": 55,
-      "rtt_p95_us": 68,
-      "rtt_p99_us": 79,
-      "saturated_control_p99_us": 251,
+      "connect_us": 949,
+      "rtt_p50_us": 42,
+      "rtt_p95_us": 59,
+      "rtt_p99_us": 66,
+      "saturated_control_p99_us": 180,
       "throughput": [
         {
           "payload_bytes": 1024,
           "frames": 1024,
-          "bytes_per_second": 317750303
+          "bytes_per_second": 293883408
         },
         {
           "payload_bytes": 16384,
           "frames": 256,
-          "bytes_per_second": 369843774
+          "bytes_per_second": 395390648
         },
         {
           "payload_bytes": 65536,
           "frames": 64,
-          "bytes_per_second": 485764743
+          "bytes_per_second": 437179904
         },
         {
           "payload_bytes": 1048576,
           "frames": 8,
-          "bytes_per_second": 286652815
+          "bytes_per_second": 463177516
         }
       ],
-      "fixed_handle_bytes": 1840,
-      "shutdown_us": 85
+      "fixed_handle_bytes": 1872,
+      "shutdown_us": 43
     }
   ]
 }

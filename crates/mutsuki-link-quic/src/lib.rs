@@ -255,7 +255,7 @@ impl Connection for QuicConnection {
     }
 
     fn try_receive_control(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
-        self.control.try_receive()
+        self.control.try_receive_control()
     }
 
     fn try_receive(&mut self) -> Result<Option<Vec<u8>>, TransportError> {

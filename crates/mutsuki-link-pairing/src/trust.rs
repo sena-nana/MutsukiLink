@@ -17,6 +17,10 @@ pub enum LinkPermission {
     Connect,
     OpenNamespace(String),
     Datagram,
+    TrackingPublish,
+    TrackingSubscribe,
+    TrackingNegotiate,
+    TrackingCalibrationWrite,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -178,6 +182,14 @@ enum PermissionDto {
     Connect,
     OpenNamespace(String),
     Datagram,
+    #[serde(rename = "tracking.publish")]
+    TrackingPublish,
+    #[serde(rename = "tracking.subscribe")]
+    TrackingSubscribe,
+    #[serde(rename = "tracking.negotiate")]
+    TrackingNegotiate,
+    #[serde(rename = "tracking.calibration.write")]
+    TrackingCalibrationWrite,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -221,6 +233,10 @@ impl TryFrom<RecordDto> for TrustRecord {
                 PermissionDto::Connect => LinkPermission::Connect,
                 PermissionDto::OpenNamespace(namespace) => LinkPermission::OpenNamespace(namespace),
                 PermissionDto::Datagram => LinkPermission::Datagram,
+                PermissionDto::TrackingPublish => LinkPermission::TrackingPublish,
+                PermissionDto::TrackingSubscribe => LinkPermission::TrackingSubscribe,
+                PermissionDto::TrackingNegotiate => LinkPermission::TrackingNegotiate,
+                PermissionDto::TrackingCalibrationWrite => LinkPermission::TrackingCalibrationWrite,
             })
             .collect();
         let record = Self {
@@ -249,6 +265,10 @@ impl From<&TrustRecord> for RecordDto {
                     PermissionDto::OpenNamespace(namespace.clone())
                 }
                 LinkPermission::Datagram => PermissionDto::Datagram,
+                LinkPermission::TrackingPublish => PermissionDto::TrackingPublish,
+                LinkPermission::TrackingSubscribe => PermissionDto::TrackingSubscribe,
+                LinkPermission::TrackingNegotiate => PermissionDto::TrackingNegotiate,
+                LinkPermission::TrackingCalibrationWrite => PermissionDto::TrackingCalibrationWrite,
             })
             .collect();
         let key_state = match value.key_state {

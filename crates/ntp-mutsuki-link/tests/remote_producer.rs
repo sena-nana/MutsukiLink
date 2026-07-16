@@ -1,21 +1,145 @@
 use mutsuki_link_core::{
-    COMPACT_DATA_HEADER_BYTES, ConnectContext, Connection, EndpointId, TransportBudget,
+    AuthenticatedSession, COMPACT_DATA_HEADER_BYTES, ConnectContext, Connection, ConnectionQuality,
+    EndpointAddress, EndpointId, ForwardSecrecyPolicy, IdentityEvidence, IdentityStatus,
+    LocalPeerCredentialPolicy, MemoryConnection, MemoryTransportConfig, PeerId, ProtocolVersion,
+    RemoteSecurityPolicy, SecurityExpectation, SecurityLevel, SecurityPolicy, SessionContinuity,
+    SessionId as LinkSessionId, SessionInfo, SessionKeyBinding, TransportBudget, TransportKind,
+    TransportSecurityEvidence, authenticate_session, memory_transport_pair,
 };
+use mutsuki_link_pairing::{KeyState, LinkPermission, TrustRecord};
 use mutsuki_link_quic::{QuicConnector, QuicListener, QuicOptions};
 use nana_tracking_protocol::{
     ActiveLayout, CanonicalCodec, CoordinateSpace, Direction3, LayoutLimits, LayoutProposal,
-    LengthBasis, NanaTrackingDescriptor, NanaTrackingResult, Pose, Quaternion, RegionQuality,
-    SessionId, SideMap, SignalBitSet, SignalId, SignalSample, SignalState, StructureFeatures,
-    Tracked, TrackingFeatures, TrackingProfile, Vec3,
+    LengthBasis, NanaTrackingDescriptor, NanaTrackingResult, Pose, ProducerClockEstimate,
+    Quaternion, RegionQuality, SessionId, SideMap, SignalBitSet, SignalId, SignalSample,
+    SignalState, StructureFeatures, Tracked, TrackingFeatures, TrackingProfile, Vec3,
 };
 use ntp_mutsuki_link::{
-    BindingConfig, ClockSynchronizer, GeometryTopology, PublishOutcome, Publisher, PublisherEvent,
-    RESULT_FRAGMENT_HEADER_LEN, ReceiveOutcome, SessionCommand, Subscriber, SubscriberEvent,
+    BindingConfig, ClockSynchronizer, GeometryTopology, NtpAuthorization, NtpPermission,
+    NtpPermissions, NtpRole, PublishOutcome, Publisher, PublisherEvent, RESULT_FRAGMENT_HEADER_LEN,
+    ReceiveOutcome, SessionCommand, Subscriber, SubscriberEvent, TrackingTransportMode,
+    authorize_trusted_ntp_session,
 };
 use quinn::{ClientConfig, ServerConfig};
 use rustls::RootCertStore;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+fn authorization(role: NtpRole, peer: u8) -> NtpAuthorization {
+    let permissions = NtpPermissions::empty().with(NtpPermission::Negotiate);
+    let permissions = match role {
+        NtpRole::Publisher => permissions.with(NtpPermission::Publish),
+        NtpRole::Subscriber => permissions.with(NtpPermission::Subscribe),
+    };
+    authorization_with(role, peer, 9, permissions).unwrap()
+}
+
+fn authorization_with(
+    role: NtpRole,
+    peer: u8,
+    link_session: u8,
+    permissions: NtpPermissions,
+) -> Result<NtpAuthorization, ntp_mutsuki_link::BindingError> {
+    authorization_with_state(role, peer, link_session, permissions, KeyState::Active)
+}
+
+fn authorization_with_state(
+    role: NtpRole,
+    peer: u8,
+    link_session: u8,
+    permissions: NtpPermissions,
+    key_state: KeyState,
+) -> Result<NtpAuthorization, ntp_mutsuki_link::BindingError> {
+    let link_session_id = LinkSessionId::from_bytes([link_session; 16]);
+    let peer_id = PeerId::from_bytes([peer; 32]);
+    let mut link_permissions = BTreeSet::from([LinkPermission::Connect]);
+    for (permission, link_permission) in [
+        (NtpPermission::Publish, LinkPermission::TrackingPublish),
+        (NtpPermission::Subscribe, LinkPermission::TrackingSubscribe),
+        (NtpPermission::Negotiate, LinkPermission::TrackingNegotiate),
+        (
+            NtpPermission::CalibrationWrite,
+            LinkPermission::TrackingCalibrationWrite,
+        ),
+    ] {
+        if permissions.contains(permission) {
+            link_permissions.insert(link_permission);
+        }
+    }
+    let record = TrustRecord {
+        peer_id,
+        public_key: vec![peer; 32],
+        alias: "test peer".to_owned(),
+        first_paired_at_unix_ms: 1,
+        permissions: link_permissions,
+        key_state,
+        last_pairing_challenge_hash: [7; 32],
+        previous_key_fingerprints: Vec::new(),
+    };
+    let fingerprint = record.public_key_fingerprint();
+    let local_endpoint = EndpointAddress {
+        scheme: "quic".to_owned(),
+        address: "local".to_owned(),
+    };
+    let remote_endpoint = EndpointAddress {
+        scheme: "quic".to_owned(),
+        address: "remote".to_owned(),
+    };
+    let session = SessionInfo {
+        session_id: link_session_id,
+        peer_id,
+        protocols: Vec::new(),
+        continuity: SessionContinuity::default(),
+        quality: ConnectionQuality::default(),
+        close_reason: None,
+    };
+    let evidence = TransportSecurityEvidence {
+        transport: TransportKind::Quic,
+        security_level: SecurityLevel::AuthenticatedEncrypted,
+        mutually_authenticated: true,
+        local_peer_credential_verified: false,
+        development_plaintext: false,
+        identity: IdentityEvidence {
+            peer_id,
+            public_key_fingerprint: fingerprint,
+            key_epoch: 4,
+            status: IdentityStatus::Active {
+                valid_until_unix_ms: 2_000,
+            },
+        },
+        session_key: Some(SessionKeyBinding {
+            key_id: [6; 32],
+            forward_secure: true,
+            handshake_transcript_hash: [5; 32],
+            local_endpoint: local_endpoint.clone(),
+            remote_endpoint: remote_endpoint.clone(),
+            link_version: ProtocolVersion::new(1, 0),
+        }),
+    };
+    let expectation = SecurityExpectation {
+        peer_id,
+        public_key_fingerprint: fingerprint,
+        minimum_key_epoch: 4,
+        handshake_transcript_hash: [5; 32],
+        local_endpoint,
+        remote_endpoint,
+        link_version: ProtocolVersion::new(1, 0),
+        now_unix_ms: 1_000,
+    };
+    let authenticated: AuthenticatedSession<'_> = authenticate_session(
+        &session,
+        &evidence,
+        &expectation,
+        SecurityPolicy {
+            remote: RemoteSecurityPolicy::AuthenticatedEncrypted,
+            forward_secrecy: ForwardSecrecyPolicy::Required,
+            local_peer_credential: LocalPeerCredentialPolicy::Optional,
+        },
+    )
+    .unwrap();
+    authorize_trusted_ntp_session(authenticated, role, &record, 1)
+}
 
 fn crypto_configs() -> (ServerConfig, ClientConfig) {
     let generated = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
@@ -95,12 +219,267 @@ async fn wait_subscriber<C: Connection>(
     }
 }
 
+async fn established_memory_pair(
+    config: BindingConfig,
+    target_fps: u16,
+) -> (
+    Publisher<MemoryConnection>,
+    Subscriber<MemoryConnection>,
+    NanaTrackingDescriptor,
+    NanaTrackingResult,
+) {
+    let (client, server) = memory_transport_pair(
+        EndpointId::from_bytes([1; 16]),
+        EndpointId::from_bytes([2; 16]),
+        MemoryTransportConfig {
+            queue_capacity: 16,
+            max_message_bytes: 8 * 1024 * 1024,
+            datagram_capacity: 0,
+        },
+    );
+    let mut publisher =
+        Publisher::new(client, authorization(NtpRole::Publisher, 2), config).unwrap();
+    let mut subscriber =
+        Subscriber::new(server, authorization(NtpRole::Subscriber, 1), config).unwrap();
+    publisher.try_send_hello().unwrap();
+    assert_eq!(
+        wait_subscriber(&mut subscriber, 1_000_000).await,
+        SubscriberEvent::HelloAccepted
+    );
+    subscriber.try_send_hello().unwrap();
+    assert_eq!(
+        wait_publisher(&mut publisher, 2_000_000).await,
+        PublisherEvent::HelloAccepted
+    );
+    let (descriptor, result) = full_result(15, 2_150_000, 2_160_000);
+    publisher
+        .publish_descriptor(
+            descriptor.clone(),
+            result.session_id,
+            result.generation,
+            7,
+            LayoutProposal::for_profile(TrackingProfile::Full, target_fps),
+            GeometryTopology::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        wait_subscriber(&mut subscriber, 1_100_000).await,
+        SubscriberEvent::ProposalAccepted
+    );
+    assert_eq!(
+        wait_publisher(&mut publisher, 2_100_000).await,
+        PublisherEvent::LayoutAccepted
+    );
+    assert_eq!(
+        wait_subscriber(&mut subscriber, 1_150_000).await,
+        SubscriberEvent::SessionReady
+    );
+    assert_eq!(
+        wait_publisher(&mut publisher, 2_150_000).await,
+        PublisherEvent::SessionReady
+    );
+    subscriber.try_send_command(SessionCommand::Start).unwrap();
+    assert_eq!(
+        wait_publisher(&mut publisher, 2_160_000).await,
+        PublisherEvent::PlaybackChanged(SessionCommand::Start)
+    );
+    (publisher, subscriber, descriptor, result)
+}
+
+#[test]
+fn tracking_roles_require_explicit_negotiate_and_direction_permissions() {
+    let missing_publish = authorization_with(
+        NtpRole::Publisher,
+        2,
+        9,
+        NtpPermissions::empty().with(NtpPermission::Negotiate),
+    )
+    .unwrap_err();
+    assert_eq!(
+        missing_publish,
+        ntp_mutsuki_link::BindingError::Unauthorized
+    );
+
+    let missing_negotiate = authorization_with(
+        NtpRole::Subscriber,
+        1,
+        9,
+        NtpPermissions::empty().with(NtpPermission::Subscribe),
+    )
+    .unwrap_err();
+    assert_eq!(
+        missing_negotiate,
+        ntp_mutsuki_link::BindingError::Unauthorized
+    );
+
+    let revoked = authorization_with_state(
+        NtpRole::Publisher,
+        2,
+        9,
+        NtpPermissions::empty()
+            .with(NtpPermission::Publish)
+            .with(NtpPermission::Negotiate),
+        KeyState::Revoked {
+            revoked_at_unix_ms: 1_500,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(revoked, ntp_mutsuki_link::BindingError::PeerRevoked);
+}
+
+#[test]
+fn control_hello_rejects_a_different_link_session_before_layout_parsing() {
+    let (client, server) = memory_transport_pair(
+        EndpointId::from_bytes([1; 16]),
+        EndpointId::from_bytes([2; 16]),
+        MemoryTransportConfig {
+            datagram_capacity: 0,
+            ..MemoryTransportConfig::default()
+        },
+    );
+    let mut publisher = Publisher::new(
+        client,
+        authorization(NtpRole::Publisher, 2),
+        BindingConfig::default(),
+    )
+    .unwrap();
+    let subscriber_authorization = authorization_with(
+        NtpRole::Subscriber,
+        1,
+        8,
+        NtpPermissions::empty()
+            .with(NtpPermission::Subscribe)
+            .with(NtpPermission::Negotiate),
+    )
+    .unwrap();
+    let mut subscriber =
+        Subscriber::new(server, subscriber_authorization, BindingConfig::default()).unwrap();
+    publisher.try_send_hello().unwrap();
+    assert_eq!(
+        subscriber.poll_control(1_000).unwrap_err(),
+        ntp_mutsuki_link::BindingError::SessionBindingMismatch
+    );
+}
+
+#[test]
+fn reconnect_requires_a_new_connection_and_new_authenticated_link_session() {
+    let config = BindingConfig::default();
+    let pair = || {
+        memory_transport_pair(
+            EndpointId::from_bytes([1; 16]),
+            EndpointId::from_bytes([2; 16]),
+            MemoryTransportConfig {
+                datagram_capacity: 0,
+                ..MemoryTransportConfig::default()
+            },
+        )
+    };
+    let (client, _) = pair();
+    let mut publisher =
+        Publisher::new(client, authorization(NtpRole::Publisher, 2), config).unwrap();
+    let (same_session_connection, _) = pair();
+    assert_eq!(
+        publisher
+            .reset_for_reconnect(
+                same_session_connection,
+                authorization(NtpRole::Publisher, 2),
+            )
+            .unwrap_err(),
+        ntp_mutsuki_link::BindingError::SessionBindingMismatch
+    );
+    let (new_session_connection, _) = pair();
+    let new_authorization = authorization_with(
+        NtpRole::Publisher,
+        2,
+        10,
+        NtpPermissions::empty()
+            .with(NtpPermission::Publish)
+            .with(NtpPermission::Negotiate),
+    )
+    .unwrap();
+    publisher
+        .reset_for_reconnect(new_session_connection, new_authorization)
+        .unwrap();
+    assert!(publisher.bound_session().is_none());
+    assert_eq!(
+        publisher.transport_mode(),
+        TrackingTransportMode::ReliableLatestOnly
+    );
+}
+
+#[tokio::test]
+async fn frame_flood_and_reconfigure_windows_fail_closed() {
+    let config = BindingConfig {
+        max_target_fps: 60,
+        max_burst_fps: 60,
+        max_reconfigure_per_minute: 1,
+        geometry_cadence: None,
+        ..BindingConfig::default()
+    };
+    let (mut publisher, mut subscriber, descriptor, mut result) =
+        established_memory_pair(config, 60).await;
+    publisher.try_send_latest(&result).unwrap();
+    let mut rate_limited = 0;
+    for sequence in 16..175 {
+        result.sequence = sequence;
+        match publisher.try_send_latest(&result) {
+            Ok(_) => {}
+            Err(ntp_mutsuki_link::BindingError::RateLimited) => rate_limited += 1,
+            result => panic!("unexpected flood result: {result:?}"),
+        }
+    }
+    assert_eq!(rate_limited, 100);
+    assert_eq!(publisher.telemetry().rate_limited, 100);
+
+    publisher
+        .publish_descriptor(
+            descriptor.clone(),
+            result.session_id,
+            result.generation + 1,
+            8,
+            LayoutProposal::for_profile(TrackingProfile::Full, 60),
+            GeometryTopology::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        wait_subscriber(&mut subscriber, 61_200_000_000).await,
+        SubscriberEvent::ProposalAccepted
+    );
+    assert_eq!(
+        wait_publisher(&mut publisher, 2_200_000).await,
+        PublisherEvent::LayoutAccepted
+    );
+    assert_eq!(
+        wait_subscriber(&mut subscriber, 61_250_000_000).await,
+        SubscriberEvent::SessionReady
+    );
+    assert_eq!(
+        wait_publisher(&mut publisher, 2_250_000).await,
+        PublisherEvent::SessionReady
+    );
+    assert_eq!(
+        publisher
+            .publish_descriptor(
+                descriptor,
+                result.session_id,
+                result.generation + 2,
+                9,
+                LayoutProposal::for_profile(TrackingProfile::Full, 60),
+                GeometryTopology::default(),
+            )
+            .unwrap_err(),
+        ntp_mutsuki_link::BindingError::RateLimited
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn full_profile_remote_producer_negotiates_and_uses_the_ntp_result_interface() {
     let (client, server) = quic_pair().await;
     let config = BindingConfig::default();
-    let mut publisher = Publisher::new(client, config).unwrap();
-    let mut subscriber = Subscriber::new(server, config).unwrap();
+    let mut publisher =
+        Publisher::new(client, authorization(NtpRole::Publisher, 2), config).unwrap();
+    let mut subscriber =
+        Subscriber::new(server, authorization(NtpRole::Subscriber, 1), config).unwrap();
 
     publisher.try_send_hello().unwrap();
     assert_eq!(
@@ -194,6 +573,201 @@ async fn full_profile_remote_producer_negotiates_and_uses_the_ntp_result_interfa
         wait_publisher(&mut publisher, 2_300_000).await,
         PublisherEvent::ReceiverReport(report) if report.received == 1
     ));
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn authenticated_reliable_fallback_is_latest_only_bounded_and_control_safe() {
+    let (client, server) = memory_transport_pair(
+        EndpointId::from_bytes([1; 16]),
+        EndpointId::from_bytes([2; 16]),
+        MemoryTransportConfig {
+            queue_capacity: 1,
+            max_message_bytes: 8 * 1024 * 1024,
+            datagram_capacity: 0,
+        },
+    );
+    let config = BindingConfig {
+        geometry_cadence: None,
+        max_protocol_violations: 1,
+        ..BindingConfig::default()
+    };
+    let mut publisher =
+        Publisher::new(client, authorization(NtpRole::Publisher, 2), config).unwrap();
+    let mut subscriber =
+        Subscriber::new(server, authorization(NtpRole::Subscriber, 1), config).unwrap();
+    assert_eq!(
+        publisher.transport_mode(),
+        TrackingTransportMode::ReliableLatestOnly
+    );
+    assert_eq!(
+        subscriber.transport_mode(),
+        TrackingTransportMode::ReliableLatestOnly
+    );
+
+    publisher.try_send_hello().unwrap();
+    assert_eq!(
+        wait_subscriber(&mut subscriber, 1_000_000).await,
+        SubscriberEvent::HelloAccepted
+    );
+    subscriber.try_send_hello().unwrap();
+    assert_eq!(
+        wait_publisher(&mut publisher, 2_000_000).await,
+        PublisherEvent::HelloAccepted
+    );
+    let (descriptor, mut result) = full_result(15, 2_150_000, 2_160_000);
+    publisher
+        .publish_descriptor(
+            descriptor,
+            result.session_id,
+            result.generation,
+            7,
+            LayoutProposal::for_profile(TrackingProfile::Full, 120),
+            GeometryTopology::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        wait_subscriber(&mut subscriber, 1_100_000).await,
+        SubscriberEvent::ProposalAccepted
+    );
+    assert_eq!(
+        wait_publisher(&mut publisher, 2_100_000).await,
+        PublisherEvent::LayoutAccepted
+    );
+    assert_eq!(
+        wait_subscriber(&mut subscriber, 1_150_000).await,
+        SubscriberEvent::SessionReady
+    );
+    assert_eq!(
+        wait_publisher(&mut publisher, 2_150_000).await,
+        PublisherEvent::SessionReady
+    );
+    subscriber.try_send_command(SessionCommand::Start).unwrap();
+    assert_eq!(
+        wait_publisher(&mut publisher, 2_160_000).await,
+        PublisherEvent::PlaybackChanged(SessionCommand::Start)
+    );
+
+    for sequence in 15..18 {
+        result.sequence = sequence;
+        result.capture_timestamp_ns = 2_150_000 + sequence;
+        result.produced_timestamp_ns = 2_160_000 + sequence;
+        publisher.try_send_latest(&result).unwrap();
+    }
+    assert_eq!(
+        publisher.try_send_latest(&result).unwrap_err(),
+        ntp_mutsuki_link::BindingError::ReplayOrDuplicate
+    );
+    let telemetry = publisher.telemetry();
+    assert!(telemetry.reliable_pending <= 3);
+    assert!(telemetry.queue_replacements > 0);
+
+    subscriber.try_send_command(SessionCommand::Pause).unwrap();
+    assert_eq!(
+        wait_publisher(&mut publisher, 2_200_000).await,
+        PublisherEvent::PlaybackChanged(SessionCommand::Pause)
+    );
+
+    let clock = ProducerClockEstimate::synchronized(2_200_000, 0);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let received = loop {
+        let (_, received) = subscriber.poll_realtime(clock, |_| {}).unwrap();
+        let _ = publisher.poll_control(2_200_000).unwrap();
+        if let Some(received) = received {
+            break received;
+        }
+        assert!(Instant::now() < deadline);
+        tokio::task::yield_now().await;
+    };
+    assert_eq!(received.sequence, 17);
+    let bound = publisher.bound_session().unwrap();
+    assert_eq!(bound.peer_id, PeerId::from_bytes([2; 32]));
+    assert_eq!(bound.link_session_id, LinkSessionId::from_bytes([9; 16]));
+    assert_eq!(bound.ntp_session_id, result.session_id);
+    assert_eq!(bound.generation, result.generation);
+    assert_eq!(bound.layout_id, 7);
+    assert_eq!(bound.target_fps, 120);
+    assert_eq!(
+        bound.transport_mode,
+        TrackingTransportMode::ReliableLatestOnly
+    );
+
+    subscriber.try_send_command(SessionCommand::Resume).unwrap();
+    assert_eq!(
+        wait_publisher(&mut publisher, 2_210_000).await,
+        PublisherEvent::PlaybackChanged(SessionCommand::Resume)
+    );
+    let started = Instant::now();
+    let mut result_latencies_us = Vec::with_capacity(120);
+    for sequence in 100..220 {
+        let result_started = Instant::now();
+        result.sequence = sequence;
+        result.capture_timestamp_ns = 2_150_000 + sequence;
+        result.produced_timestamp_ns = 2_160_000 + sequence;
+        publisher.try_send_latest(&result).unwrap();
+        loop {
+            let (_, received) = subscriber.poll_realtime(clock, |_| {}).unwrap();
+            let _ = publisher.poll_control(2_220_000).unwrap();
+            if received.is_some() {
+                result_latencies_us.push(result_started.elapsed().as_micros());
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        if sequence % 12 == 0 {
+            subscriber.try_send_ping(1_000_000 + sequence).unwrap();
+            loop {
+                let _ = publisher.poll_control(2_220_000).unwrap();
+                if subscriber.poll_control(1_100_000 + sequence).unwrap()
+                    == Some(SubscriberEvent::ClockSynchronized)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        }
+    }
+    let elapsed = started.elapsed();
+    result_latencies_us.sort_unstable();
+    let p50_us = result_latencies_us[result_latencies_us.len() / 2];
+    let p99_us = result_latencies_us[result_latencies_us.len() * 99 / 100];
+    let max_us = *result_latencies_us.last().unwrap();
+    assert_eq!(subscriber.receiver_report().received, 121);
+    assert_eq!(publisher.telemetry().steady_buffer_growths, 0);
+    println!(
+        "reliable-latest smoke: 120 full results in {}us; p50={}us p99={}us max={}us; control pings remained live",
+        elapsed.as_micros(),
+        p50_us,
+        p99_us,
+        max_us
+    );
+
+    let mut malformed = Vec::new();
+    malformed.extend_from_slice(b"NTLF");
+    malformed.push(1);
+    malformed.extend_from_slice(&0x4e10_u16.to_be_bytes());
+    malformed.extend_from_slice(&result.generation.to_be_bytes());
+    malformed.extend_from_slice(&220_u64.to_be_bytes());
+    malformed.extend_from_slice(&1_u32.to_be_bytes());
+    malformed.push(0);
+    let mut raw_connection = publisher.into_inner();
+    raw_connection.try_send(&malformed).unwrap();
+    let mut entered_runtime = false;
+    let malformed_result = subscriber.poll_realtime(clock, |_| entered_runtime = true);
+    assert!(
+        matches!(
+            malformed_result,
+            Err(ntp_mutsuki_link::BindingError::LayoutMismatch)
+        ),
+        "unexpected malformed-frame result: {malformed_result:?}"
+    );
+    assert!(!entered_runtime);
+    assert_eq!(subscriber.telemetry().malformed_frames, 1);
+    assert!(subscriber.telemetry().fuse_tripped);
+    assert_eq!(
+        subscriber.poll_realtime(clock, |_| {}).unwrap_err(),
+        ntp_mutsuki_link::BindingError::ChannelFused
+    );
 }
 
 fn assert_publish_uses_all_flows(outcome: PublishOutcome) {

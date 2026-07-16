@@ -378,6 +378,7 @@ impl Default for MemoryTransportConfig {
 
 #[derive(Debug)]
 struct MemorySide {
+    control: VecDeque<Vec<u8>>,
     reliable: VecDeque<Vec<u8>>,
     datagrams: VecDeque<Vec<u8>>,
     write_closed: bool,
@@ -388,6 +389,7 @@ struct MemorySide {
 impl MemorySide {
     fn new() -> Self {
         Self {
+            control: VecDeque::new(),
             reliable: VecDeque::new(),
             datagrams: VecDeque::new(),
             write_closed: false,
@@ -445,7 +447,7 @@ pub fn memory_transport_pair(
 }
 
 impl MemoryConnection {
-    fn send_to_remote(&mut self, message: &[u8], datagram: bool) -> Result<(), TransportError> {
+    fn send_to_remote(&mut self, message: &[u8], lane: MemoryLane) -> Result<(), TransportError> {
         if message.len() > self.config.max_message_bytes {
             return Err(TransportError::new(
                 TransportErrorKind::MessageTooLarge,
@@ -476,10 +478,10 @@ impl MemoryConnection {
                 "remote read side is closed",
             ));
         }
-        let (queue, capacity) = if datagram {
-            (&mut remote.datagrams, self.config.datagram_capacity)
-        } else {
-            (&mut remote.reliable, self.config.queue_capacity)
+        let (queue, capacity) = match lane {
+            MemoryLane::Control => (&mut remote.control, self.config.queue_capacity),
+            MemoryLane::Reliable => (&mut remote.reliable, self.config.queue_capacity),
+            MemoryLane::Datagram => (&mut remote.datagrams, self.config.datagram_capacity),
         };
         if queue.len() >= capacity {
             return Err(TransportError::new(
@@ -491,7 +493,7 @@ impl MemoryConnection {
         Ok(())
     }
 
-    fn receive_local(&mut self, datagram: bool) -> Result<Option<Vec<u8>>, TransportError> {
+    fn receive_local(&mut self, lane: MemoryLane) -> Result<Option<Vec<u8>>, TransportError> {
         let mut local = self.local.lock().expect("memory transport lock");
         if local.aborted {
             return Err(TransportError::new(
@@ -505,10 +507,10 @@ impl MemoryConnection {
                 "read side is closed",
             ));
         }
-        let message = if datagram {
-            local.datagrams.pop_front()
-        } else {
-            local.reliable.pop_front()
+        let message = match lane {
+            MemoryLane::Control => local.control.pop_front(),
+            MemoryLane::Reliable => local.reliable.pop_front(),
+            MemoryLane::Datagram => local.datagrams.pop_front(),
         };
         if message.is_some() {
             return Ok(message);
@@ -526,17 +528,32 @@ impl MemoryConnection {
     }
 }
 
+#[derive(Clone, Copy)]
+enum MemoryLane {
+    Control,
+    Reliable,
+    Datagram,
+}
+
 impl Connection for MemoryConnection {
     fn metadata(&self) -> &ConnectionMetadata {
         &self.metadata
     }
 
     fn try_send(&mut self, message: &[u8]) -> Result<(), TransportError> {
-        self.send_to_remote(message, false)
+        self.send_to_remote(message, MemoryLane::Reliable)
     }
 
     fn try_receive(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
-        self.receive_local(false)
+        self.receive_local(MemoryLane::Reliable)
+    }
+
+    fn try_send_control(&mut self, message: &[u8]) -> Result<(), TransportError> {
+        self.send_to_remote(message, MemoryLane::Control)
+    }
+
+    fn try_receive_control(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        self.receive_local(MemoryLane::Control)
     }
 
     fn try_send_datagram(&mut self, message: &[u8]) -> Result<(), TransportError> {
@@ -546,7 +563,7 @@ impl Connection for MemoryConnection {
                 "datagrams are not supported",
             ));
         }
-        self.send_to_remote(message, true)
+        self.send_to_remote(message, MemoryLane::Datagram)
     }
 
     fn try_receive_datagram(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
@@ -556,7 +573,7 @@ impl Connection for MemoryConnection {
                 "datagrams are not supported",
             ));
         }
-        self.receive_local(true)
+        self.receive_local(MemoryLane::Datagram)
     }
 
     fn close_write(&mut self) -> Result<(), TransportError> {
@@ -657,5 +674,22 @@ mod tests {
                 .kind,
             TransportErrorKind::Other
         );
+    }
+
+    #[test]
+    fn memory_control_lane_remains_available_when_reliable_data_is_saturated() {
+        let config = MemoryTransportConfig {
+            queue_capacity: 1,
+            max_message_bytes: 64,
+            datagram_capacity: 0,
+        };
+        let (mut left, mut right) = memory_transport_pair(endpoint(1), endpoint(2), config);
+        left.try_send(b"frame").unwrap();
+        left.try_send_control(b"pause").unwrap();
+        assert_eq!(
+            right.try_receive_control().unwrap(),
+            Some(b"pause".to_vec())
+        );
+        assert_eq!(right.try_receive().unwrap(), Some(b"frame".to_vec()));
     }
 }
