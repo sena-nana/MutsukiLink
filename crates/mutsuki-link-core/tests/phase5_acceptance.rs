@@ -16,7 +16,8 @@ fn channel(
     discardable: bool,
 ) -> ProtocolChannel {
     ProtocolChannel {
-        name: name.to_owned(),
+        id: protocol_channel_id(name),
+        debug_name: Some(name.to_owned()),
         mode,
         priority,
         max_frame_bytes,
@@ -26,13 +27,43 @@ fn channel(
     }
 }
 
+fn protocol_channel_id(name: &str) -> ProtocolChannelId {
+    ProtocolChannelId(match name {
+        "command" | "control" | "request" | "stream" => 1,
+        "debug" | "resource" => 2,
+        "file" | "result" => 3,
+        "event" => 4,
+        _ => 99,
+    })
+}
+
+fn offer(namespace: &str, supported: VersionRange) -> ProtocolOffer {
+    ProtocolOffer::from_debug_namespace(namespace, supported)
+}
+
+fn descriptor(
+    namespace: &str,
+    supported: VersionRange,
+    channels: Vec<ProtocolChannel>,
+) -> ProtocolDescriptor {
+    let offer = offer(namespace, supported);
+    ProtocolDescriptor {
+        stable_id: offer.stable_id,
+        debug_identity: offer.debug_identity,
+        versions: supported,
+        schema: offer.schema,
+        capabilities: offer.capabilities,
+        channels,
+    }
+}
+
 fn product_registry() -> FrozenProtocolRegistry {
     let mut registry = ProtocolRegistry::new(ProtocolRegistryLimits::default()).unwrap();
     registry
-        .register(ProtocolDescriptor {
-            id: ProtocolId::new("lilia.code").unwrap(),
-            versions: versions(1, 0, 2),
-            channels: vec![
+        .register(descriptor(
+            "lilia.code",
+            versions(1, 0, 2),
+            vec![
                 channel(
                     "command",
                     ChannelMode::RequestResponse,
@@ -52,13 +83,13 @@ fn product_registry() -> FrozenProtocolRegistry {
                 ),
                 channel("event", ChannelMode::Event, 60, 64 * 1024, None, true),
             ],
-        })
+        ))
         .unwrap();
     registry
-        .register(ProtocolDescriptor {
-            id: ProtocolId::new("mutsuki.distributed.cluster").unwrap(),
-            versions: versions(2, 0, 1),
-            channels: vec![
+        .register(descriptor(
+            "mutsuki.distributed.cluster",
+            versions(2, 0, 1),
+            vec![
                 channel(
                     "control",
                     ChannelMode::RequestResponse,
@@ -84,7 +115,7 @@ fn product_registry() -> FrozenProtocolRegistry {
                     false,
                 ),
             ],
-        })
+        ))
         .unwrap();
     registry.freeze()
 }
@@ -96,14 +127,8 @@ fn independent_protocols_share_link_without_sharing_business_messages() {
     assert_eq!(offers.len(), 2);
     let selections = registry
         .negotiate(&[
-            ProtocolOffer {
-                namespace: "lilia.code".to_owned(),
-                versions: versions(1, 1, 1),
-            },
-            ProtocolOffer {
-                namespace: "mutsuki.distributed.cluster".to_owned(),
-                versions: versions(2, 0, 0),
-            },
+            offer("lilia.code", versions(1, 1, 1)),
+            offer("mutsuki.distributed.cluster", versions(2, 0, 0)),
         ])
         .unwrap();
     assert_eq!(selections.len(), 2);
@@ -112,16 +137,16 @@ fn independent_protocols_share_link_without_sharing_business_messages() {
 
     let lilia = active
         .open_channel(ChannelOpenRequest {
-            protocol: ProtocolId::new("lilia.code").unwrap(),
-            channel_name: "file".to_owned(),
+            protocol_id: offer("lilia.code", versions(1, 0, 2)).stable_id,
+            protocol_channel_id: protocol_channel_id("file"),
             channel_id: ChannelId(1),
             capacity: 4,
         })
         .unwrap();
     let distributed = active
         .open_channel(ChannelOpenRequest {
-            protocol: ProtocolId::new("mutsuki.distributed.cluster").unwrap(),
-            channel_name: "control".to_owned(),
+            protocol_id: offer("mutsuki.distributed.cluster", versions(2, 0, 1)).stable_id,
+            protocol_channel_id: protocol_channel_id("control"),
             channel_id: ChannelId(2),
             capacity: 2,
         })
@@ -129,12 +154,20 @@ fn independent_protocols_share_link_without_sharing_business_messages() {
     assert_ne!(lilia.config.key.namespace, distributed.config.key.namespace);
     assert_eq!(lilia.config.mode, ChannelMode::Stream);
     assert_eq!(distributed.config.mode, ChannelMode::RequestResponse);
+    assert_eq!(
+        lilia.accepted_mapping(),
+        AcceptChannel {
+            protocol_id: lilia.protocol_id,
+            protocol_channel_id: protocol_channel_id("file"),
+            session_channel_id: ChannelId(1),
+        }
+    );
 
     let mut mux = Multiplexer::restricted(
         MultiplexerLimits::default(),
         selections
             .iter()
-            .map(|selection| (selection.namespace.clone(), selection.version)),
+            .map(|selection| (selection.stable_id.wire_namespace(), selection.version)),
     )
     .unwrap();
     mux.open_channel(lilia.config).unwrap();
@@ -146,26 +179,23 @@ fn one_incompatible_protocol_is_disabled_without_breaking_the_other() {
     let registry = product_registry();
     let selections = registry
         .negotiate(&[
-            ProtocolOffer {
-                namespace: "lilia.code".to_owned(),
-                versions: versions(9, 0, 0),
-            },
-            ProtocolOffer {
-                namespace: "mutsuki.distributed.cluster".to_owned(),
-                versions: versions(2, 1, 3),
-            },
+            offer("lilia.code", versions(9, 0, 0)),
+            offer("mutsuki.distributed.cluster", versions(2, 1, 3)),
         ])
         .unwrap();
     assert_eq!(selections.len(), 1);
-    assert_eq!(selections[0].namespace, "mutsuki.distributed.cluster");
+    assert_eq!(
+        selections[0].stable_id,
+        offer("mutsuki.distributed.cluster", versions(2, 0, 1)).stable_id
+    );
     let active = registry.activate(&selections).unwrap();
     assert!(!active.contains(&ProtocolId::new("lilia.code").unwrap()));
     assert!(active.contains(&ProtocolId::new("mutsuki.distributed.cluster").unwrap()));
     assert_eq!(
         active
             .open_channel(ChannelOpenRequest {
-                protocol: ProtocolId::new("lilia.code").unwrap(),
-                channel_name: "command".to_owned(),
+                protocol_id: offer("lilia.code", versions(1, 0, 2)).stable_id,
+                protocol_channel_id: protocol_channel_id("command"),
                 channel_id: ChannelId(1),
                 capacity: 1,
             })
@@ -179,16 +209,13 @@ fn one_incompatible_protocol_is_disabled_without_breaking_the_other() {
 fn channel_shape_frame_stream_and_queue_limits_are_enforced() {
     let registry = product_registry();
     let selections = registry
-        .negotiate(&[ProtocolOffer {
-            namespace: "lilia.code".to_owned(),
-            versions: versions(1, 0, 2),
-        }])
+        .negotiate(&[offer("lilia.code", versions(1, 0, 2))])
         .unwrap();
     let active = registry.activate(&selections).unwrap();
     let file = active
         .open_channel(ChannelOpenRequest {
-            protocol: ProtocolId::new("lilia.code").unwrap(),
-            channel_name: "file".to_owned(),
+            protocol_id: offer("lilia.code", versions(1, 0, 2)).stable_id,
+            protocol_channel_id: protocol_channel_id("file"),
             channel_id: ChannelId(1),
             capacity: 8,
         })
@@ -210,8 +237,8 @@ fn channel_shape_frame_stream_and_queue_limits_are_enforced() {
     assert_eq!(
         active
             .open_channel(ChannelOpenRequest {
-                protocol: ProtocolId::new("lilia.code").unwrap(),
-                channel_name: "file".to_owned(),
+                protocol_id: offer("lilia.code", versions(1, 0, 2)).stable_id,
+                protocol_channel_id: protocol_channel_id("file"),
                 channel_id: ChannelId(2),
                 capacity: 9,
             })
@@ -222,12 +249,12 @@ fn channel_shape_frame_stream_and_queue_limits_are_enforced() {
 }
 
 #[test]
-fn registry_rejects_collisions_and_freezes_before_session_use() {
+fn registry_rejects_identity_schema_and_channel_collisions() {
     let mut registry = ProtocolRegistry::new(ProtocolRegistryLimits::default()).unwrap();
-    let descriptor = ProtocolDescriptor {
-        id: ProtocolId::new("example.echo").unwrap(),
-        versions: versions(1, 0, 0),
-        channels: vec![channel(
+    let echo_descriptor = descriptor(
+        "example.echo",
+        versions(1, 0, 0),
+        vec![channel(
             "request",
             ChannelMode::RequestResponse,
             0,
@@ -235,12 +262,75 @@ fn registry_rejects_collisions_and_freezes_before_session_use() {
             None,
             false,
         )],
-    };
-    registry.register(descriptor.clone()).unwrap();
+    );
+    registry.register(echo_descriptor.clone()).unwrap();
+    let mut identity_collision = echo_descriptor.clone();
+    identity_collision.debug_identity = Some(ProtocolDebugIdentity::new("attacker", "echo"));
     assert_eq!(
-        registry.register(descriptor).unwrap_err().kind,
+        registry.register(identity_collision).unwrap_err().kind,
+        ProtocolRegistryErrorKind::IdentityConflict
+    );
+    let mut schema_collision = echo_descriptor.clone();
+    schema_collision.schema = SchemaRef::for_contract("example", "echo", 1, b"different-contract");
+    assert_eq!(
+        registry.register(schema_collision).unwrap_err().kind,
+        ProtocolRegistryErrorKind::SchemaConflict
+    );
+    assert_eq!(
+        registry.register(echo_descriptor.clone()).unwrap_err().kind,
         ProtocolRegistryErrorKind::DuplicateProtocol
     );
+    let duplicate_channel = descriptor(
+        "example.duplicate",
+        versions(1, 0, 0),
+        vec![
+            channel(
+                "request",
+                ChannelMode::RequestResponse,
+                0,
+                1024,
+                None,
+                false,
+            ),
+            ProtocolChannel {
+                id: ProtocolChannelId(1),
+                debug_name: Some("other".to_owned()),
+                mode: ChannelMode::Event,
+                priority: 0,
+                max_frame_bytes: 1024,
+                max_stream_bytes: None,
+                max_in_flight_frames: 1,
+                discardable: true,
+            },
+        ],
+    );
+    assert_eq!(
+        ProtocolRegistry::new(ProtocolRegistryLimits::default())
+            .unwrap()
+            .register(duplicate_channel)
+            .unwrap_err()
+            .kind,
+        ProtocolRegistryErrorKind::DuplicateChannel
+    );
+}
+
+#[test]
+fn registry_rejects_invalid_and_unbounded_descriptors_before_freeze() {
+    let mut registry = ProtocolRegistry::new(ProtocolRegistryLimits::default()).unwrap();
+    registry
+        .register(descriptor(
+            "example.echo",
+            versions(1, 0, 0),
+            vec![channel(
+                "request",
+                ChannelMode::RequestResponse,
+                0,
+                1024,
+                None,
+                false,
+            )],
+        ))
+        .unwrap();
     assert_eq!(
         ProtocolId::new("not_namespaced").unwrap_err().kind,
         ProtocolRegistryErrorKind::InvalidProtocolId
@@ -255,20 +345,20 @@ fn registry_rejects_collisions_and_freezes_before_session_use() {
     .unwrap();
     assert_eq!(
         bounded
-            .register(ProtocolDescriptor {
-                id: ProtocolId::new("example.invalidstream").unwrap(),
-                versions: versions(1, 0, 0),
-                channels: vec![channel("stream", ChannelMode::Stream, 0, 1024, None, false,)],
-            })
+            .register(descriptor(
+                "example.invalidstream",
+                versions(1, 0, 0),
+                vec![channel("stream", ChannelMode::Stream, 0, 1024, None, false)],
+            ))
             .unwrap_err()
             .kind,
         ProtocolRegistryErrorKind::InvalidChannel
     );
     bounded
-        .register(ProtocolDescriptor {
-            id: ProtocolId::new("example.bounded").unwrap(),
-            versions: versions(1, 0, 0),
-            channels: vec![channel(
+        .register(descriptor(
+            "example.bounded",
+            versions(1, 0, 0),
+            vec![channel(
                 "request",
                 ChannelMode::RequestResponse,
                 0,
@@ -276,20 +366,14 @@ fn registry_rejects_collisions_and_freezes_before_session_use() {
                 None,
                 false,
             )],
-        })
+        ))
         .unwrap();
     let bounded = bounded.freeze();
     assert_eq!(
         bounded
             .negotiate(&[
-                ProtocolOffer {
-                    namespace: "example.bounded".to_owned(),
-                    versions: versions(1, 0, 0),
-                },
-                ProtocolOffer {
-                    namespace: "example.extra".to_owned(),
-                    versions: versions(1, 0, 0),
-                },
+                offer("example.bounded", versions(1, 0, 0)),
+                offer("example.extra", versions(1, 0, 0)),
             ])
             .unwrap_err()
             .kind,

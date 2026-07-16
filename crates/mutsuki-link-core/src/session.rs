@@ -1,6 +1,7 @@
 use crate::{
-    ConnectionQuality, LimitKind, LinkError, Multiplexer, MultiplexerLimits, NegotiatedSession,
-    PeerId, ProtocolSelection, SessionContinuity, SessionId,
+    AcceptChannel, ConnectionQuality, ControlModeGuard, LimitKind, LinkControlError,
+    LinkControlOpcode, LinkError, MAX_SESSION_CHANNEL_MAPPINGS, Multiplexer, MultiplexerLimits,
+    NegotiatedSession, PeerId, ProtocolSelection, SessionChannelMap, SessionContinuity, SessionId,
 };
 use std::collections::{BTreeMap, VecDeque};
 
@@ -131,6 +132,8 @@ pub struct Session {
     info: SessionInfo,
     events: SessionEventBus,
     multiplexer: Multiplexer,
+    control_mode: ControlModeGuard,
+    channel_mappings: SessionChannelMap,
 }
 
 impl Session {
@@ -139,10 +142,11 @@ impl Session {
         mux_limits: MultiplexerLimits,
         max_event_subscribers: usize,
     ) -> Result<Self, LinkError> {
+        let control_mode = negotiated.control_mode_guard();
         let allowed_protocols = negotiated
             .protocols
             .iter()
-            .map(|protocol| (protocol.namespace.clone(), protocol.version))
+            .map(|protocol| (protocol.stable_id.wire_namespace(), protocol.version))
             .collect::<Vec<_>>();
         Ok(Self {
             state: SessionState::Established,
@@ -156,6 +160,10 @@ impl Session {
             },
             events: SessionEventBus::new(max_event_subscribers)?,
             multiplexer: Multiplexer::restricted(mux_limits, allowed_protocols)?,
+            control_mode,
+            channel_mappings: SessionChannelMap::new(MAX_SESSION_CHANNEL_MAPPINGS).map_err(
+                |_| LinkError::InvalidInput("session channel mapping limits are invalid"),
+            )?,
         })
     }
 
@@ -173,6 +181,44 @@ impl Session {
 
     pub fn multiplexer(&mut self) -> &mut Multiplexer {
         &mut self.multiplexer
+    }
+
+    pub const fn control_mode(&self) -> ControlModeGuard {
+        self.control_mode
+    }
+
+    pub fn accept_channel_mapping(
+        &mut self,
+        accepted: AcceptChannel,
+    ) -> Result<(), LinkControlError> {
+        if !matches!(
+            self.state,
+            SessionState::Established | SessionState::Draining
+        ) {
+            return Err(LinkControlError::session_not_active(
+                LinkControlOpcode::ChannelAccepted,
+            ));
+        }
+        self.control_mode.validate_typed()?;
+        if !self
+            .info
+            .protocols
+            .iter()
+            .any(|protocol| protocol.stable_id == accepted.protocol_id)
+        {
+            return Err(LinkControlError {
+                domain: crate::ErrorDomain::Security,
+                code: crate::ErrorCode(1),
+                operation: Some(LinkControlOpcode::ChannelAccepted),
+                retryability: crate::Retryability::Never,
+                public_message: "channel mapping references an unnegotiated protocol",
+            });
+        }
+        self.channel_mappings.bind(accepted)
+    }
+
+    pub fn channel_mappings(&self) -> &SessionChannelMap {
+        &self.channel_mappings
     }
 
     pub fn update_quality(&mut self, quality: ConnectionQuality) -> Result<(), LinkError> {
@@ -250,7 +296,10 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AuthPath, ConnectionId, EndpointId, Identity, ProtocolVersion};
+    use crate::{
+        AuthPath, ConnectionId, EndpointId, Identity, LinkCapabilities, ProtocolCapabilitySet,
+        ProtocolDebugIdentity, ProtocolVersion, SchemaRef,
+    };
 
     fn negotiated() -> NegotiatedSession {
         NegotiatedSession {
@@ -266,9 +315,16 @@ mod tests {
                 connection_id: ConnectionId::from_bytes([2; 16]),
             },
             link_version: ProtocolVersion::new(1, 0),
-            protocols: vec![ProtocolSelection {
-                namespace: "test".to_owned(),
-                version: ProtocolVersion::new(1, 0),
+            link_capabilities: LinkCapabilities::TYPED_CONTROL,
+            protocols: vec![{
+                let identity = ProtocolDebugIdentity::new("local", "test");
+                let stable_id = identity.stable_id();
+                ProtocolSelection {
+                    stable_id,
+                    version: ProtocolVersion::new(1, 0),
+                    schema: SchemaRef::for_contract("local", "test", 1, b"test"),
+                    capabilities: ProtocolCapabilitySet::empty(stable_id),
+                }
             }],
             auth_path: AuthPath::FirstPairing,
         }
@@ -327,5 +383,35 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(error, LinkError::NamespaceConflict);
+    }
+
+    #[test]
+    fn authenticated_session_owns_typed_channel_mapping() {
+        let negotiated = negotiated();
+        let protocol_id = negotiated.protocols[0].stable_id;
+        let mut session =
+            Session::established(negotiated, MultiplexerLimits::default(), 1).unwrap();
+        session
+            .accept_channel_mapping(AcceptChannel {
+                protocol_id,
+                protocol_channel_id: crate::ProtocolChannelId(1),
+                session_channel_id: crate::ChannelId(7),
+            })
+            .unwrap();
+        assert_eq!(
+            session
+                .channel_mappings()
+                .session_channel(protocol_id, crate::ProtocolChannelId(1)),
+            Some(crate::ChannelId(7))
+        );
+        session.abort();
+        let error = session
+            .accept_channel_mapping(AcceptChannel {
+                protocol_id,
+                protocol_channel_id: crate::ProtocolChannelId(2),
+                session_channel_id: crate::ChannelId(8),
+            })
+            .unwrap_err();
+        assert_eq!(error.code, crate::ErrorCode(9));
     }
 }

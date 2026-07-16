@@ -1,108 +1,110 @@
 {
-  "schema": "mutsuki-link-release-baseline/2.0.0",
+  "schema": "mutsuki-link-release-baseline/2.1.0",
   "smoke_only": true,
   "claim_boundary": "Local loopback transport smoke only; not LAN, Wi-Fi, or production latency",
   "operating_system": "macos",
   "architecture": "aarch64",
   "logical_cpus": 10,
-  "handshake_us": 47,
-  "idle_tick_ns": 2,
+  "handshake_us": 38,
+  "idle_tick_ns": 3,
+  "typed_control_frame_bytes": 47,
+  "typed_control_roundtrips_per_second": 10946308,
   "baselines": [
     {
       "transport": "local",
-      "connect_us": 145,
+      "connect_us": 164,
       "rtt_p50_us": 15,
-      "rtt_p95_us": 37,
-      "rtt_p99_us": 63,
-      "saturated_control_p99_us": 46,
+      "rtt_p95_us": 38,
+      "rtt_p99_us": 52,
+      "saturated_control_p99_us": 41,
       "throughput": [
         {
           "payload_bytes": 1024,
           "frames": 1024,
-          "bytes_per_second": 446963341
+          "bytes_per_second": 392137621
         },
         {
           "payload_bytes": 16384,
           "frames": 256,
-          "bytes_per_second": 1025885819
+          "bytes_per_second": 1407595704
         },
         {
           "payload_bytes": 65536,
           "frames": 64,
-          "bytes_per_second": 1086607253
+          "bytes_per_second": 1807889655
         },
         {
           "payload_bytes": 1048576,
           "frames": 8,
-          "bytes_per_second": 131863179
+          "bytes_per_second": 169125161
         }
       ],
       "fixed_handle_bytes": 528,
-      "shutdown_us": 14
+      "shutdown_us": 10
     },
     {
       "transport": "tcp",
-      "connect_us": 218,
-      "rtt_p50_us": 45,
-      "rtt_p95_us": 73,
-      "rtt_p99_us": 85,
-      "saturated_control_p99_us": 556,
+      "connect_us": 233,
+      "rtt_p50_us": 64,
+      "rtt_p95_us": 71,
+      "rtt_p99_us": 78,
+      "saturated_control_p99_us": 402,
       "throughput": [
         {
           "payload_bytes": 1024,
           "frames": 1024,
-          "bytes_per_second": 165966445
+          "bytes_per_second": 178937883
         },
         {
           "payload_bytes": 16384,
           "frames": 256,
-          "bytes_per_second": 1153922320
+          "bytes_per_second": 1961220338
         },
         {
           "payload_bytes": 65536,
           "frames": 64,
-          "bytes_per_second": 2383127272
+          "bytes_per_second": 4574938917
         },
         {
           "payload_bytes": 1048576,
           "frames": 8,
-          "bytes_per_second": 510007782
+          "bytes_per_second": 3771856115
         }
       ],
       "fixed_handle_bytes": 544,
-      "shutdown_us": 3
+      "shutdown_us": 2
     },
     {
       "transport": "quic",
-      "connect_us": 1097,
-      "rtt_p50_us": 46,
-      "rtt_p95_us": 75,
-      "rtt_p99_us": 105,
-      "saturated_control_p99_us": 260,
+      "connect_us": 1131,
+      "rtt_p50_us": 55,
+      "rtt_p95_us": 68,
+      "rtt_p99_us": 79,
+      "saturated_control_p99_us": 251,
       "throughput": [
         {
           "payload_bytes": 1024,
           "frames": 1024,
-          "bytes_per_second": 277547908
+          "bytes_per_second": 317750303
         },
         {
           "payload_bytes": 16384,
           "frames": 256,
-          "bytes_per_second": 349154286
+          "bytes_per_second": 369843774
         },
         {
           "payload_bytes": 65536,
           "frames": 64,
-          "bytes_per_second": 491278881
+          "bytes_per_second": 485764743
         },
         {
           "payload_bytes": 1048576,
           "frames": 8,
-          "bytes_per_second": 488618825
+          "bytes_per_second": 286652815
         }
       ],
       "fixed_handle_bytes": 1840,
-      "shutdown_us": 467
+      "shutdown_us": 85
     }
   ]
 }

@@ -1,18 +1,39 @@
 use crate::{
-    HandshakeError, HandshakeErrorKind, Identity, PeerId, ProtocolVersion, SessionId, VersionRange,
+    HandshakeError, HandshakeErrorKind, Identity, LinkCapabilities, PeerId, ProtocolCapabilitySet,
+    ProtocolDebugIdentity, ProtocolStableId, ProtocolVersion, SchemaRef, SessionId, VersionRange,
 };
 use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProtocolOffer {
-    pub namespace: String,
+    pub stable_id: ProtocolStableId,
+    pub debug_identity: Option<ProtocolDebugIdentity>,
     pub versions: VersionRange,
+    pub schema: SchemaRef,
+    pub capabilities: ProtocolCapabilitySet,
+}
+
+impl ProtocolOffer {
+    pub fn from_debug_namespace(namespace: &str, versions: VersionRange) -> Self {
+        let (authority, name) = namespace.rsplit_once('.').unwrap_or(("local", namespace));
+        let debug_identity = ProtocolDebugIdentity::new(authority, name);
+        let stable_id = debug_identity.stable_id();
+        Self {
+            stable_id,
+            debug_identity: Some(debug_identity),
+            versions,
+            schema: SchemaRef::for_contract(authority, name, 1, namespace.as_bytes()),
+            capabilities: ProtocolCapabilitySet::empty(stable_id),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProtocolSelection {
-    pub namespace: String,
+    pub stable_id: ProtocolStableId,
     pub version: ProtocolVersion,
+    pub schema: SchemaRef,
+    pub capabilities: ProtocolCapabilitySet,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,12 +53,14 @@ pub enum HandshakeFrame {
     Hello {
         identity: Identity,
         link_versions: VersionRange,
+        link_capabilities: LinkCapabilities,
         protocols: Vec<ProtocolOffer>,
         requested_auth: AuthPath,
     },
     Challenge {
         responder: Identity,
         link_version: ProtocolVersion,
+        link_capabilities: LinkCapabilities,
         auth_path: AuthPath,
         nonce: [u8; 32],
     },
@@ -97,8 +120,21 @@ pub struct NegotiatedSession {
     pub local: Identity,
     pub remote: Identity,
     pub link_version: ProtocolVersion,
+    pub link_capabilities: LinkCapabilities,
     pub protocols: Vec<ProtocolSelection>,
     pub auth_path: AuthPath,
+}
+
+impl NegotiatedSession {
+    /// The control identity rules are fixed by the authenticated handshake and
+    /// must not be changed for the lifetime of this session.
+    pub const fn control_identity_mode(&self) -> crate::ControlIdentityMode {
+        crate::ControlIdentityMode::negotiate(self.link_capabilities)
+    }
+
+    pub const fn control_mode_guard(&self) -> crate::ControlModeGuard {
+        crate::ControlModeGuard::new(self.control_identity_mode())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -111,6 +147,7 @@ pub enum HandshakeOutput {
 #[derive(Clone, Debug)]
 pub struct HandshakePolicy {
     pub link_versions: VersionRange,
+    pub link_capabilities: LinkCapabilities,
     /// Full protocol catalog exposed only after an existing trust relationship.
     pub protocols: Vec<ProtocolOffer>,
     /// Minimal non-sensitive catalog available during first pairing.
@@ -141,6 +178,7 @@ pub struct HandshakeMachine {
     remote: Option<Identity>,
     auth_path: Option<AuthPath>,
     link_version: Option<ProtocolVersion>,
+    link_capabilities: LinkCapabilities,
     selected_protocols: Vec<ProtocolSelection>,
     pending_verification: Option<VerificationRequest>,
 }
@@ -166,6 +204,7 @@ impl HandshakeMachine {
             remote: None,
             auth_path: None,
             link_version: None,
+            link_capabilities: LinkCapabilities::default(),
             selected_protocols: Vec::new(),
             pending_verification: None,
         }
@@ -192,11 +231,26 @@ impl HandshakeMachine {
                 "too many local protocol offers",
             ));
         }
+        if protocols.iter().any(|offer| {
+            offer.schema.revision.0 == 0
+                || offer.capabilities.protocol_id != offer.stable_id
+                || !offer.capabilities.is_bounded()
+                || offer
+                    .debug_identity
+                    .as_ref()
+                    .is_some_and(|identity| identity.stable_id() != offer.stable_id)
+        }) {
+            return Err(self.fail(
+                HandshakeErrorKind::ProtocolConflict,
+                "upper protocol offer is internally inconsistent",
+            ));
+        }
         self.auth_path = Some(auth_path);
         self.state = HandshakeState::AwaitingChallenge;
         Ok(HandshakeFrame::Hello {
             identity: self.config.identity,
             link_versions: self.config.policy.link_versions,
+            link_capabilities: self.config.policy.link_capabilities,
             protocols: protocols.clone(),
             requested_auth: auth_path,
         })
@@ -213,16 +267,24 @@ impl HandshakeMachine {
                 HandshakeFrame::Hello {
                     identity,
                     link_versions,
+                    link_capabilities,
                     protocols,
                     requested_auth,
                 },
-            ) => self.receive_hello(identity, link_versions, protocols, requested_auth),
+            ) => self.receive_hello(
+                identity,
+                link_versions,
+                link_capabilities,
+                protocols,
+                requested_auth,
+            ),
             (
                 HandshakeRole::Initiator,
                 HandshakeState::AwaitingChallenge,
                 HandshakeFrame::Challenge {
                     responder,
                     link_version,
+                    link_capabilities,
                     auth_path,
                     nonce: _,
                 },
@@ -234,6 +296,7 @@ impl HandshakeMachine {
                     .negotiate(VersionRange::new(link_version, link_version))
                     .is_none()
                     || self.auth_path != Some(auth_path)
+                    || !link_capabilities.is_subset_of(self.config.policy.link_capabilities)
                 {
                     return Err(self.fail(
                         HandshakeErrorKind::IncompatibleVersion,
@@ -242,6 +305,7 @@ impl HandshakeMachine {
                 }
                 self.remote = Some(responder);
                 self.link_version = Some(link_version);
+                self.link_capabilities = link_capabilities;
                 self.state = HandshakeState::AwaitingSelection;
                 Ok(vec![HandshakeOutput::Send(HandshakeFrame::IdentityProof(
                     self.config.identity_proof.clone(),
@@ -332,6 +396,7 @@ impl HandshakeMachine {
         &mut self,
         identity: Identity,
         link_versions: VersionRange,
+        remote_capabilities: LinkCapabilities,
         protocols: Vec<ProtocolOffer>,
         requested_auth: AuthPath,
     ) -> Result<Vec<HandshakeOutput>, HandshakeError> {
@@ -365,7 +430,12 @@ impl HandshakeMachine {
             AuthPath::FirstPairing => &self.config.policy.pairing_protocols,
             AuthPath::TrustedReconnect => &self.config.policy.protocols,
         };
-        let selected = negotiate_protocols(local_protocols, &protocols);
+        let selected = negotiate_protocols(local_protocols, &protocols).map_err(|()| {
+            self.fail(
+                HandshakeErrorKind::ProtocolConflict,
+                "upper protocol identity or schema conflicts",
+            )
+        })?;
         if selected.is_empty() {
             return Err(self.fail(
                 HandshakeErrorKind::NoSharedProtocol,
@@ -375,11 +445,17 @@ impl HandshakeMachine {
         self.remote = Some(identity);
         self.auth_path = Some(requested_auth);
         self.link_version = Some(link_version);
+        self.link_capabilities = self
+            .config
+            .policy
+            .link_capabilities
+            .intersection(remote_capabilities);
         self.selected_protocols = selected;
         self.state = HandshakeState::AwaitingProof;
         Ok(vec![HandshakeOutput::Send(HandshakeFrame::Challenge {
             responder: self.config.identity,
             link_version,
+            link_capabilities: self.link_capabilities,
             auth_path: requested_auth,
             nonce: self.config.challenge_nonce,
         })])
@@ -428,9 +504,20 @@ impl HandshakeMachine {
                 ));
             }
         };
+        let mut stable_ids = BTreeSet::new();
         for selection in selected {
+            if !stable_ids.insert(selection.stable_id) {
+                return Err(self.fail(
+                    HandshakeErrorKind::ProtocolConflict,
+                    "responder selected a protocol more than once",
+                ));
+            }
             let valid = local_protocols.iter().any(|offer| {
-                offer.namespace == selection.namespace
+                offer.stable_id == selection.stable_id
+                    && offer.schema == selection.schema
+                    && offer.capabilities.protocol_id == selection.capabilities.protocol_id
+                    && selection.capabilities.is_bounded()
+                    && selection.capabilities.is_subset_of(&offer.capabilities)
                     && offer
                         .versions
                         .negotiate(VersionRange::new(selection.version, selection.version))
@@ -438,7 +525,7 @@ impl HandshakeMachine {
             });
             if !valid {
                 return Err(self.fail(
-                    HandshakeErrorKind::NoSharedProtocol,
+                    HandshakeErrorKind::ProtocolConflict,
                     "responder selected an unsupported protocol",
                 ));
             }
@@ -452,6 +539,7 @@ impl HandshakeMachine {
             local: self.config.identity,
             remote: self.remote.expect("remote identity negotiated"),
             link_version: self.link_version.expect("link version negotiated"),
+            link_capabilities: self.link_capabilities,
             protocols: self.selected_protocols.clone(),
             auth_path: self.auth_path.expect("auth path negotiated"),
         }
@@ -466,23 +554,39 @@ impl HandshakeMachine {
 fn negotiate_protocols(
     local: &[ProtocolOffer],
     remote: &[ProtocolOffer],
-) -> Vec<ProtocolSelection> {
+) -> Result<Vec<ProtocolSelection>, ()> {
     let mut selected = Vec::new();
-    let mut namespaces = BTreeSet::new();
+    let mut stable_ids = BTreeSet::new();
     for local_offer in local {
-        if !namespaces.insert(local_offer.namespace.as_str()) {
+        if !stable_ids.insert(local_offer.stable_id) {
             continue;
         }
-        if let Some((namespace, version)) = remote.iter().find_map(|remote_offer| {
-            (remote_offer.namespace == local_offer.namespace)
-                .then(|| local_offer.versions.negotiate(remote_offer.versions))
-                .flatten()
-                .map(|version| (local_offer.namespace.clone(), version))
-        }) {
-            selected.push(ProtocolSelection { namespace, version });
+        if let Some(remote_offer) = remote
+            .iter()
+            .find(|remote_offer| remote_offer.stable_id == local_offer.stable_id)
+        {
+            if local_offer.schema != remote_offer.schema
+                || (local_offer.debug_identity.is_some()
+                    && remote_offer.debug_identity.is_some()
+                    && local_offer.debug_identity != remote_offer.debug_identity)
+            {
+                return Err(());
+            }
+            if let Some(version) = local_offer.versions.negotiate(remote_offer.versions) {
+                let capabilities = local_offer
+                    .capabilities
+                    .intersect(&remote_offer.capabilities)
+                    .ok_or(())?;
+                selected.push(ProtocolSelection {
+                    stable_id: local_offer.stable_id,
+                    version,
+                    schema: local_offer.schema,
+                    capabilities,
+                });
+            }
         }
     }
-    selected
+    Ok(selected)
 }
 
 #[cfg(test)]
@@ -499,10 +603,10 @@ mod tests {
     }
 
     fn offer(namespace: &str) -> ProtocolOffer {
-        ProtocolOffer {
-            namespace: namespace.to_owned(),
-            versions: VersionRange::new(ProtocolVersion::new(1, 0), ProtocolVersion::new(1, 2)),
-        }
+        ProtocolOffer::from_debug_namespace(
+            namespace,
+            VersionRange::new(ProtocolVersion::new(1, 0), ProtocolVersion::new(1, 2)),
+        )
     }
 
     fn config(value: u8, protocols: Vec<ProtocolOffer>) -> HandshakeConfig {
@@ -513,6 +617,9 @@ mod tests {
                     ProtocolVersion::new(1, 0),
                     ProtocolVersion::new(1, 1),
                 ),
+                link_capabilities: LinkCapabilities::COMPACT_CHANNEL_ID
+                    | LinkCapabilities::DATAGRAMS
+                    | LinkCapabilities::TYPED_CONTROL,
                 pairing_protocols: protocols.clone(),
                 protocols,
                 allow_pairing: true,
@@ -564,7 +671,9 @@ mod tests {
         let initiator_outputs = initiator.receive(confirmed).unwrap();
         assert!(matches!(
             &initiator_outputs[0],
-            HandshakeOutput::Established(session) if session.protocols.len() == 2
+            HandshakeOutput::Established(session)
+                if session.protocols.len() == 2
+                    && session.control_identity_mode() == crate::ControlIdentityMode::TypedV1
         ));
         assert_eq!(initiator.state(), HandshakeState::Established);
         assert_eq!(responder.state(), HandshakeState::Established);
@@ -589,7 +698,59 @@ mod tests {
         assert!(matches!(
             hello,
             HandshakeFrame::Hello { protocols, .. }
-                if protocols.len() == 1 && protocols[0].namespace == "mutsuki.link.pairing"
+                if protocols.len() == 1
+                    && protocols[0].debug_identity.as_ref().map(|identity| identity.name.as_str())
+                        == Some("pairing")
         ));
+    }
+
+    #[test]
+    fn initiator_rejects_responder_capability_escalation() {
+        let mut initiator = HandshakeMachine::initiator(config(1, vec![offer("test")]));
+        initiator.start(AuthPath::FirstPairing).unwrap();
+        let error = initiator
+            .receive(HandshakeFrame::Challenge {
+                responder: identity(2),
+                link_version: ProtocolVersion::new(1, 1),
+                link_capabilities: LinkCapabilities::from_bits(u64::MAX),
+                auth_path: AuthPath::FirstPairing,
+                nonce: [2; 32],
+            })
+            .unwrap_err();
+        assert_eq!(error.kind, HandshakeErrorKind::IncompatibleVersion);
+        assert_eq!(initiator.state(), HandshakeState::Failed);
+    }
+
+    #[test]
+    fn handshake_rejects_protocol_capability_escalation() {
+        let local_offer = offer("test");
+        let stable_id = local_offer.stable_id;
+        let schema = local_offer.schema;
+        let mut initiator = HandshakeMachine::initiator(config(1, vec![local_offer]));
+        initiator.start(AuthPath::FirstPairing).unwrap();
+        initiator
+            .receive(HandshakeFrame::Challenge {
+                responder: identity(2),
+                link_version: ProtocolVersion::new(1, 1),
+                link_capabilities: LinkCapabilities::TYPED_CONTROL,
+                auth_path: AuthPath::FirstPairing,
+                nonce: [2; 32],
+            })
+            .unwrap();
+        let error = initiator
+            .receive(HandshakeFrame::Selection {
+                session_id: SessionId::from_bytes([2; 16]),
+                protocols: vec![ProtocolSelection {
+                    stable_id,
+                    version: ProtocolVersion::new(1, 1),
+                    schema,
+                    capabilities: ProtocolCapabilitySet {
+                        protocol_id: stable_id,
+                        words: vec![1],
+                    },
+                }],
+            })
+            .unwrap_err();
+        assert_eq!(error.kind, HandshakeErrorKind::ProtocolConflict);
     }
 }

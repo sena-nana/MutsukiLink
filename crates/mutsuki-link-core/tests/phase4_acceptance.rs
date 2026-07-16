@@ -305,9 +305,18 @@ fn negotiated() -> NegotiatedSession {
             connection_id: ConnectionId::from_bytes([2; 16]),
         },
         link_version: ProtocolVersion::new(1, 0),
-        protocols: vec![ProtocolSelection {
-            namespace: "mutsuki.events".to_owned(),
-            version: ProtocolVersion::new(1, 0),
+        link_capabilities: LinkCapabilities::TYPED_CONTROL,
+        protocols: vec![{
+            let offer = ProtocolOffer::from_debug_namespace(
+                "mutsuki.events",
+                VersionRange::new(ProtocolVersion::new(1, 0), ProtocolVersion::new(1, 0)),
+            );
+            ProtocolSelection {
+                stable_id: offer.stable_id,
+                version: ProtocolVersion::new(1, 0),
+                schema: offer.schema,
+                capabilities: offer.capabilities,
+            }
         }],
         auth_path: AuthPath::TrustedReconnect,
     }

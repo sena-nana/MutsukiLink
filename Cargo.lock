@@ -379,6 +379,9 @@ dependencies = [
 [[package]]
 name = "mutsuki-link-core"
 version = "0.1.0"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "mutsuki-link-discovery"

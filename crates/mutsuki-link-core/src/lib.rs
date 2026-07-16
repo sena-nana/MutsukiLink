@@ -16,6 +16,7 @@
 )]
 
 mod budget;
+mod control;
 mod error;
 mod handshake;
 mod identity;
@@ -31,6 +32,16 @@ mod session;
 mod transport;
 
 pub use budget::{ConnectionBudget, MaintenanceBudget, MaintenanceMode};
+pub use control::{
+    AcceptChannel, BeginDrain, CloseChannel, CloseSession, ControlEnvelope, ControlFlags,
+    ControlIdentityMode, ControlModeGuard, ControlPayload, ErrorCode, ErrorDomain, HelloControl,
+    LinkCapabilities, LinkControlError, LinkControlOpcode, MAX_CONTROL_DEBUG_COMPONENT_BYTES,
+    MAX_CONTROL_PAYLOAD_BYTES, MAX_CONTROL_PROTOCOLS, MAX_PROTOCOL_CAPABILITY_WORDS,
+    MAX_SESSION_CHANNEL_MAPPINGS, OpenChannel, Ping, Pong, ProtocolCapabilitySet,
+    ProtocolChannelId, ProtocolDebugIdentity, ProtocolStableId, RequestId, Retryability,
+    SchemaFingerprint, SchemaId, SchemaRef, SchemaRevision, SessionChannelMap,
+    TYPED_CONTROL_WIRE_VERSION, decode_control_envelope, encode_control_envelope,
+};
 pub use error::{HandshakeError, HandshakeErrorKind, LimitKind, LinkError};
 pub use handshake::{
     AuthPath, HandshakeConfig, HandshakeFrame, HandshakeMachine, HandshakeOutput, HandshakePolicy,
@@ -51,8 +62,8 @@ pub use mux::{
 };
 pub use protocol::{
     ActiveProtocolSet, ChannelOpenRequest, FrozenProtocolRegistry, ProtocolChannel,
-    ProtocolDescriptor, ProtocolId, ProtocolRegistry, ProtocolRegistryError,
-    ProtocolRegistryErrorKind, ProtocolRegistryLimits, ValidatedChannel,
+    ProtocolChannelDescriptor, ProtocolDescriptor, ProtocolId, ProtocolRegistry,
+    ProtocolRegistryError, ProtocolRegistryErrorKind, ProtocolRegistryLimits, ValidatedChannel,
 };
 pub use realtime::{
     QueuedRealtimeDatagram, REALTIME_DATAGRAM_HEADER_LEN, RealtimeDatagram, RealtimeEvent,

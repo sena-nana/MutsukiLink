@@ -17,9 +17,16 @@ fn compatible_link_versions() -> VersionRange {
 }
 
 fn release_offer() -> ProtocolOffer {
-    ProtocolOffer {
-        namespace: "example.release".to_owned(),
-        versions: range(1, 0, 1),
+    ProtocolOffer::from_debug_namespace("example.release", range(1, 0, 1))
+}
+
+fn release_selection(version: ProtocolVersion) -> ProtocolSelection {
+    let offer = release_offer();
+    ProtocolSelection {
+        stable_id: offer.stable_id,
+        version,
+        schema: offer.schema,
+        capabilities: offer.capabilities,
     }
 }
 
@@ -36,6 +43,9 @@ fn handshake_config(value: u8) -> HandshakeConfig {
         identity: identity(value),
         policy: HandshakePolicy {
             link_versions: compatible_link_versions(),
+            link_capabilities: LinkCapabilities::COMPACT_CHANNEL_ID
+                | LinkCapabilities::DATAGRAMS
+                | LinkCapabilities::TYPED_CONTROL,
             protocols: vec![release_offer()],
             pairing_protocols: vec![release_offer()],
             allow_pairing: true,
@@ -75,6 +85,7 @@ fn current_previous_and_incompatible_versions_are_explicit() {
         .receive(HandshakeFrame::Hello {
             identity: identity(1),
             link_versions: range(99, 0, 1),
+            link_capabilities: LinkCapabilities::default(),
             protocols: vec![],
             requested_auth: AuthPath::FirstPairing,
         })
@@ -88,6 +99,7 @@ fn duplicate_out_of_order_and_oversized_handshake_input_fail_closed() {
     let hello = HandshakeFrame::Hello {
         identity: identity(1),
         link_versions: compatible_link_versions(),
+        link_capabilities: LinkCapabilities::COMPACT_CHANNEL_ID,
         protocols: vec![release_offer()],
         requested_auth: AuthPath::FirstPairing,
     };
@@ -115,19 +127,11 @@ fn duplicate_out_of_order_and_oversized_handshake_input_fail_closed() {
             .receive(HandshakeFrame::Hello {
                 identity: identity(1),
                 link_versions: compatible_link_versions(),
+                link_capabilities: LinkCapabilities::default(),
                 protocols: vec![
-                    ProtocolOffer {
-                        namespace: "example.one".to_owned(),
-                        versions: range(1, 0, 0),
-                    },
-                    ProtocolOffer {
-                        namespace: "example.two".to_owned(),
-                        versions: range(1, 0, 0),
-                    },
-                    ProtocolOffer {
-                        namespace: "example.three".to_owned(),
-                        versions: range(1, 0, 0),
-                    },
+                    ProtocolOffer::from_debug_namespace("example.one", range(1, 0, 0)),
+                    ProtocolOffer::from_debug_namespace("example.two", range(1, 0, 0)),
+                    ProtocolOffer::from_debug_namespace("example.three", range(1, 0, 0)),
                 ],
                 requested_auth: AuthPath::FirstPairing,
             })
@@ -138,14 +142,20 @@ fn duplicate_out_of_order_and_oversized_handshake_input_fail_closed() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn unknown_protocol_channel_and_malformed_envelopes_are_isolated() {
     let mut registry = ProtocolRegistry::new(ProtocolRegistryLimits::default()).unwrap();
+    let offer = release_offer();
     registry
         .register(ProtocolDescriptor {
-            id: ProtocolId::new("example.release").unwrap(),
+            stable_id: offer.stable_id,
+            debug_identity: offer.debug_identity,
             versions: range(1, 0, 1),
+            schema: offer.schema,
+            capabilities: offer.capabilities,
             channels: vec![ProtocolChannel {
-                name: "control".to_owned(),
+                id: ProtocolChannelId(1),
+                debug_name: Some("control".to_owned()),
                 mode: ChannelMode::RequestResponse,
                 priority: 0,
                 max_frame_bytes: 8,
@@ -157,16 +167,13 @@ fn unknown_protocol_channel_and_malformed_envelopes_are_isolated() {
         .unwrap();
     let registry = registry.freeze();
     let active = registry
-        .activate(&[ProtocolSelection {
-            namespace: "example.release".to_owned(),
-            version: version(1, 1),
-        }])
+        .activate(&[release_selection(version(1, 1))])
         .unwrap();
     assert_eq!(
         active
             .open_channel(ChannelOpenRequest {
-                protocol: ProtocolId::new("example.release").unwrap(),
-                channel_name: "unknown".to_owned(),
+                protocol_id: release_offer().stable_id,
+                protocol_channel_id: ProtocolChannelId(99),
                 channel_id: ChannelId(1),
                 capacity: 1,
             })
@@ -176,9 +183,14 @@ fn unknown_protocol_channel_and_malformed_envelopes_are_isolated() {
     );
     assert_eq!(
         registry
-            .activate(&[ProtocolSelection {
-                namespace: "example.unknown".to_owned(),
-                version: version(1, 0),
+            .activate(&[{
+                let offer = ProtocolOffer::from_debug_namespace("example.unknown", range(1, 0, 0));
+                ProtocolSelection {
+                    stable_id: offer.stable_id,
+                    version: version(1, 0),
+                    schema: offer.schema,
+                    capabilities: offer.capabilities,
+                }
             }])
             .unwrap_err()
             .kind,

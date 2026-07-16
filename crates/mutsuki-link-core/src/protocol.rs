@@ -1,6 +1,7 @@
 use crate::{
-    ChannelConfig, ChannelId, ChannelKey, ChannelMode, ProtocolOffer, ProtocolSelection,
-    ProtocolVersion, VersionRange,
+    ChannelConfig, ChannelId, ChannelKey, ChannelMode, ProtocolCapabilitySet, ProtocolChannelId,
+    ProtocolDebugIdentity, ProtocolOffer, ProtocolSelection, ProtocolStableId, ProtocolVersion,
+    SchemaRef, VersionRange,
 };
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
@@ -8,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 const MAX_PROTOCOL_ID_BYTES: usize = 128;
 const MAX_CHANNEL_NAME_BYTES: usize = 64;
 
+/// Human-readable configuration identity. It is never the authoritative wire identity.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ProtocolId(String);
 
@@ -32,10 +34,11 @@ impl fmt::Display for ProtocolId {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProtocolChannel {
-    pub name: String,
+pub struct ProtocolChannelDescriptor {
+    pub id: ProtocolChannelId,
+    pub debug_name: Option<String>,
     pub mode: ChannelMode,
-    /// Lower values are more important. Link records but does not interpret product priority.
+    /// Higher values receive a larger bounded weighted-fair share.
     pub priority: u8,
     pub max_frame_bytes: usize,
     pub max_stream_bytes: Option<u64>,
@@ -44,11 +47,16 @@ pub struct ProtocolChannel {
     pub discardable: bool,
 }
 
+pub type ProtocolChannel = ProtocolChannelDescriptor;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProtocolDescriptor {
-    pub id: ProtocolId,
+    pub stable_id: ProtocolStableId,
+    pub debug_identity: Option<ProtocolDebugIdentity>,
     pub versions: VersionRange,
-    pub channels: Vec<ProtocolChannel>,
+    pub schema: SchemaRef,
+    pub capabilities: ProtocolCapabilitySet,
+    pub channels: Vec<ProtocolChannelDescriptor>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,9 +97,13 @@ pub enum ProtocolRegistryErrorKind {
     InvalidLimits,
     InvalidProtocolId,
     InvalidVersionRange,
+    InvalidSchema,
+    InvalidCapabilities,
     InvalidChannel,
     DuplicateProtocol,
     DuplicateChannel,
+    IdentityConflict,
+    SchemaConflict,
     RegistryLimitExceeded,
     UnknownProtocol,
     ProtocolNotNegotiated,
@@ -119,7 +131,7 @@ impl std::error::Error for ProtocolRegistryError {}
 #[derive(Debug)]
 pub struct ProtocolRegistry {
     limits: ProtocolRegistryLimits,
-    descriptors: BTreeMap<ProtocolId, ProtocolDescriptor>,
+    descriptors: BTreeMap<ProtocolStableId, ProtocolDescriptor>,
     total_channels: usize,
 }
 
@@ -139,10 +151,16 @@ impl ProtocolRegistry {
         &mut self,
         descriptor: ProtocolDescriptor,
     ) -> Result<(), ProtocolRegistryError> {
-        self.validate_descriptor(&descriptor)?;
-        if self.descriptors.contains_key(&descriptor.id) {
+        if let Some(existing) = self.descriptors.get(&descriptor.stable_id) {
+            if existing.debug_identity != descriptor.debug_identity {
+                return Err(error(ProtocolRegistryErrorKind::IdentityConflict));
+            }
+            if existing.schema != descriptor.schema {
+                return Err(error(ProtocolRegistryErrorKind::SchemaConflict));
+            }
             return Err(error(ProtocolRegistryErrorKind::DuplicateProtocol));
         }
+        self.validate_descriptor(&descriptor)?;
         if self.descriptors.len() >= self.limits.max_protocols
             || self
                 .total_channels
@@ -154,7 +172,7 @@ impl ProtocolRegistry {
         self.total_channels = self
             .total_channels
             .saturating_add(descriptor.channels.len());
-        self.descriptors.insert(descriptor.id.clone(), descriptor);
+        self.descriptors.insert(descriptor.stable_id, descriptor);
         Ok(())
     }
 
@@ -169,21 +187,37 @@ impl ProtocolRegistry {
         &self,
         descriptor: &ProtocolDescriptor,
     ) -> Result<(), ProtocolRegistryError> {
-        if descriptor.id.as_str().len() > self.limits.max_protocol_id_bytes {
+        if descriptor.debug_identity.as_ref().is_some_and(|identity| {
+            !identity.is_canonical()
+                || identity.authority.len().saturating_add(identity.name.len())
+                    > self.limits.max_protocol_id_bytes
+                || identity.stable_id() != descriptor.stable_id
+        }) {
             return Err(error(ProtocolRegistryErrorKind::InvalidProtocolId));
         }
         if !descriptor.versions.is_valid() {
             return Err(error(ProtocolRegistryErrorKind::InvalidVersionRange));
+        }
+        if descriptor.schema.revision.0 == 0 {
+            return Err(error(ProtocolRegistryErrorKind::InvalidSchema));
+        }
+        if descriptor.capabilities.protocol_id != descriptor.stable_id
+            || !descriptor.capabilities.is_bounded()
+        {
+            return Err(error(ProtocolRegistryErrorKind::InvalidCapabilities));
         }
         if descriptor.channels.is_empty()
             || descriptor.channels.len() > self.limits.max_channels_per_protocol
         {
             return Err(error(ProtocolRegistryErrorKind::RegistryLimitExceeded));
         }
+        let mut channel_ids = BTreeSet::new();
         let mut channel_names = BTreeSet::new();
         for channel in &descriptor.channels {
-            if channel.name.len() > self.limits.max_channel_name_bytes
-                || !valid_component(&channel.name)
+            if channel.id.0 == 0
+                || channel.debug_name.as_ref().is_some_and(|name| {
+                    name.len() > self.limits.max_channel_name_bytes || !valid_component(name)
+                })
                 || channel.max_frame_bytes == 0
                 || channel.max_in_flight_frames == 0
                 || channel.max_stream_bytes == Some(0)
@@ -192,7 +226,12 @@ impl ProtocolRegistry {
             {
                 return Err(error(ProtocolRegistryErrorKind::InvalidChannel));
             }
-            if !channel_names.insert(channel.name.as_str()) {
+            if !channel_ids.insert(channel.id)
+                || channel
+                    .debug_name
+                    .as_ref()
+                    .is_some_and(|name| !channel_names.insert(name.as_str()))
+            {
                 return Err(error(ProtocolRegistryErrorKind::DuplicateChannel));
             }
         }
@@ -202,7 +241,7 @@ impl ProtocolRegistry {
 
 #[derive(Clone, Debug)]
 pub struct FrozenProtocolRegistry {
-    descriptors: BTreeMap<ProtocolId, ProtocolDescriptor>,
+    descriptors: BTreeMap<ProtocolStableId, ProtocolDescriptor>,
     max_remote_offers: usize,
 }
 
@@ -211,14 +250,15 @@ impl FrozenProtocolRegistry {
         self.descriptors
             .values()
             .map(|descriptor| ProtocolOffer {
-                namespace: descriptor.id.to_string(),
+                stable_id: descriptor.stable_id,
+                debug_identity: descriptor.debug_identity.clone(),
                 versions: descriptor.versions,
+                schema: descriptor.schema,
+                capabilities: descriptor.capabilities.clone(),
             })
             .collect()
     }
 
-    /// Computes independent intersections. An incompatible protocol is omitted
-    /// without invalidating other shared protocol namespaces.
     pub fn negotiate(
         &self,
         remote: &[ProtocolOffer],
@@ -226,20 +266,38 @@ impl FrozenProtocolRegistry {
         if remote.len() > self.max_remote_offers {
             return Err(error(ProtocolRegistryErrorKind::RegistryLimitExceeded));
         }
-        Ok(self
-            .descriptors
-            .values()
-            .filter_map(|descriptor| {
-                remote
-                    .iter()
-                    .filter(|offer| offer.namespace == descriptor.id.as_str())
-                    .find_map(|offer| descriptor.versions.negotiate(offer.versions))
-                    .map(|version| ProtocolSelection {
-                        namespace: descriptor.id.to_string(),
-                        version,
-                    })
-            })
-            .collect())
+        let mut selections = Vec::new();
+        for descriptor in self.descriptors.values() {
+            let Some(offer) = remote
+                .iter()
+                .find(|offer| offer.stable_id == descriptor.stable_id)
+            else {
+                continue;
+            };
+            if descriptor.debug_identity.is_some()
+                && offer.debug_identity.is_some()
+                && descriptor.debug_identity != offer.debug_identity
+            {
+                return Err(error(ProtocolRegistryErrorKind::IdentityConflict));
+            }
+            if descriptor.schema != offer.schema {
+                return Err(error(ProtocolRegistryErrorKind::SchemaConflict));
+            }
+            let Some(version) = descriptor.versions.negotiate(offer.versions) else {
+                continue;
+            };
+            let capabilities = descriptor
+                .capabilities
+                .intersect(&offer.capabilities)
+                .ok_or_else(|| error(ProtocolRegistryErrorKind::InvalidCapabilities))?;
+            selections.push(ProtocolSelection {
+                stable_id: descriptor.stable_id,
+                version,
+                schema: descriptor.schema,
+                capabilities,
+            });
+        }
+        Ok(selections)
     }
 
     pub fn activate(
@@ -251,11 +309,13 @@ impl FrozenProtocolRegistry {
         }
         let mut active = BTreeMap::new();
         for selection in negotiated {
-            let id = ProtocolId::new(selection.namespace.clone())?;
             let descriptor = self
                 .descriptors
-                .get(&id)
+                .get(&selection.stable_id)
                 .ok_or_else(|| error(ProtocolRegistryErrorKind::UnknownProtocol))?;
+            if descriptor.schema != selection.schema {
+                return Err(error(ProtocolRegistryErrorKind::SchemaConflict));
+            }
             if descriptor
                 .versions
                 .negotiate(VersionRange::new(selection.version, selection.version))
@@ -264,13 +324,17 @@ impl FrozenProtocolRegistry {
                 return Err(error(ProtocolRegistryErrorKind::VersionNotSupported));
             }
             active.insert(
-                id,
+                selection.stable_id,
                 ActiveProtocol {
+                    stable_id: selection.stable_id,
+                    debug_identity: descriptor.debug_identity.clone(),
                     version: selection.version,
+                    schema: selection.schema,
+                    capabilities: selection.capabilities.clone(),
                     channels: descriptor
                         .channels
                         .iter()
-                        .map(|channel| (channel.name.clone(), channel.clone()))
+                        .map(|channel| (channel.id, channel.clone()))
                         .collect(),
                 },
             );
@@ -281,18 +345,31 @@ impl FrozenProtocolRegistry {
 
 #[derive(Clone, Debug)]
 struct ActiveProtocol {
+    stable_id: ProtocolStableId,
+    debug_identity: Option<ProtocolDebugIdentity>,
     version: ProtocolVersion,
-    channels: BTreeMap<String, ProtocolChannel>,
+    schema: SchemaRef,
+    capabilities: ProtocolCapabilitySet,
+    channels: BTreeMap<ProtocolChannelId, ProtocolChannelDescriptor>,
 }
 
 #[derive(Clone, Debug)]
 pub struct ActiveProtocolSet {
-    active: BTreeMap<ProtocolId, ActiveProtocol>,
+    active: BTreeMap<ProtocolStableId, ActiveProtocol>,
 }
 
 impl ActiveProtocolSet {
+    pub fn contains_stable(&self, protocol: ProtocolStableId) -> bool {
+        self.active.contains_key(&protocol)
+    }
+
+    /// Debug/config lookup only. Authorization and dispatch use `contains_stable`.
     pub fn contains(&self, protocol: &ProtocolId) -> bool {
-        self.active.contains_key(protocol)
+        self.active.values().any(|active| {
+            active.debug_identity.as_ref().is_some_and(|identity| {
+                format!("{}.{}", identity.authority, identity.name) == protocol.as_str()
+            })
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -309,11 +386,11 @@ impl ActiveProtocolSet {
     ) -> Result<ValidatedChannel, ProtocolRegistryError> {
         let protocol = self
             .active
-            .get(&request.protocol)
+            .get(&request.protocol_id)
             .ok_or_else(|| error(ProtocolRegistryErrorKind::ProtocolNotNegotiated))?;
         let channel = protocol
             .channels
-            .get(&request.channel_name)
+            .get(&request.protocol_channel_id)
             .ok_or_else(|| error(ProtocolRegistryErrorKind::ChannelNotDefined))?;
         if request.capacity == 0 || request.capacity > channel.max_in_flight_frames {
             return Err(error(ProtocolRegistryErrorKind::ChannelCapacityExceeded));
@@ -321,7 +398,7 @@ impl ActiveProtocolSet {
         Ok(ValidatedChannel {
             config: ChannelConfig {
                 key: ChannelKey {
-                    namespace: request.protocol.to_string(),
+                    namespace: stable_namespace(protocol.stable_id),
                     version: protocol.version,
                     id: request.channel_id,
                 },
@@ -329,7 +406,11 @@ impl ActiveProtocolSet {
                 priority_hint: channel.priority,
                 capacity: request.capacity,
             },
-            channel_name: request.channel_name,
+            protocol_id: protocol.stable_id,
+            protocol_channel_id: channel.id,
+            schema: protocol.schema,
+            capabilities: protocol.capabilities.clone(),
+            debug_name: channel.debug_name.clone(),
             max_frame_bytes: channel.max_frame_bytes,
             max_stream_bytes: channel.max_stream_bytes,
             discardable: channel.discardable,
@@ -339,22 +420,45 @@ impl ActiveProtocolSet {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelOpenRequest {
-    pub protocol: ProtocolId,
-    pub channel_name: String,
+    pub protocol_id: ProtocolStableId,
+    pub protocol_channel_id: ProtocolChannelId,
     pub channel_id: ChannelId,
     pub capacity: usize,
+}
+
+impl From<crate::OpenChannel> for ChannelOpenRequest {
+    fn from(value: crate::OpenChannel) -> Self {
+        Self {
+            protocol_id: value.protocol_id,
+            protocol_channel_id: value.protocol_channel_id,
+            channel_id: value.requested_session_channel_id,
+            capacity: usize::try_from(value.capacity).unwrap_or(usize::MAX),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedChannel {
     pub config: ChannelConfig,
-    pub channel_name: String,
+    pub protocol_id: ProtocolStableId,
+    pub protocol_channel_id: ProtocolChannelId,
+    pub schema: SchemaRef,
+    pub capabilities: ProtocolCapabilitySet,
+    pub debug_name: Option<String>,
     pub max_frame_bytes: usize,
     pub max_stream_bytes: Option<u64>,
     pub discardable: bool,
 }
 
 impl ValidatedChannel {
+    pub const fn accepted_mapping(&self) -> crate::AcceptChannel {
+        crate::AcceptChannel {
+            protocol_id: self.protocol_id,
+            protocol_channel_id: self.protocol_channel_id,
+            session_channel_id: self.config.key.id,
+        }
+    }
+
     pub fn validate_payload(
         &self,
         frame_bytes: usize,
@@ -375,6 +479,10 @@ impl ValidatedChannel {
     }
 }
 
+fn stable_namespace(id: ProtocolStableId) -> String {
+    id.wire_namespace()
+}
+
 fn valid_protocol_id(value: &str) -> bool {
     value.contains('.')
         && value.len() <= MAX_PROTOCOL_ID_BYTES
@@ -391,11 +499,17 @@ fn valid_component(value: &str) -> bool {
 const fn error(kind: ProtocolRegistryErrorKind) -> ProtocolRegistryError {
     let public_message = match kind {
         ProtocolRegistryErrorKind::InvalidLimits => "protocol registry limits must be positive",
-        ProtocolRegistryErrorKind::InvalidProtocolId => "protocol id is not a valid namespace",
+        ProtocolRegistryErrorKind::InvalidProtocolId => "protocol debug identity is invalid",
         ProtocolRegistryErrorKind::InvalidVersionRange => "protocol version range is invalid",
+        ProtocolRegistryErrorKind::InvalidSchema => "protocol schema reference is invalid",
+        ProtocolRegistryErrorKind::InvalidCapabilities => "protocol capability set is invalid",
         ProtocolRegistryErrorKind::InvalidChannel => "protocol channel definition is invalid",
         ProtocolRegistryErrorKind::DuplicateProtocol => "protocol id is already registered",
         ProtocolRegistryErrorKind::DuplicateChannel => "protocol channel is already defined",
+        ProtocolRegistryErrorKind::IdentityConflict => {
+            "protocol stable id conflicts with debug identity"
+        }
+        ProtocolRegistryErrorKind::SchemaConflict => "protocol stable id has a conflicting schema",
         ProtocolRegistryErrorKind::RegistryLimitExceeded => "protocol registry limit exceeded",
         ProtocolRegistryErrorKind::UnknownProtocol => "protocol is not registered",
         ProtocolRegistryErrorKind::ProtocolNotNegotiated => "protocol was not negotiated",

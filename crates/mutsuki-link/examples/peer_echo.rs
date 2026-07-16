@@ -1,18 +1,24 @@
 use mutsuki_link::{
     ChannelId, ChannelMode, ChannelOpenRequest, Connection, EndpointId, Envelope, EnvelopeFlags,
     MemoryTransportConfig, Multiplexer, MultiplexerLimits, OutboundFrame, ProtocolChannel,
-    ProtocolDescriptor, ProtocolId, ProtocolOffer, ProtocolRegistry, ProtocolRegistryLimits,
+    ProtocolChannelId, ProtocolDescriptor, ProtocolOffer, ProtocolRegistry, ProtocolRegistryLimits,
     ProtocolVersion, SessionId, VersionRange, memory_transport_pair,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let version = ProtocolVersion::new(1, 0);
+    let offer =
+        ProtocolOffer::from_debug_namespace("example.echo", VersionRange::new(version, version));
     let mut registry = ProtocolRegistry::new(ProtocolRegistryLimits::default())?;
     registry.register(ProtocolDescriptor {
-        id: ProtocolId::new("example.echo")?,
+        stable_id: offer.stable_id,
+        debug_identity: offer.debug_identity.clone(),
         versions: VersionRange::new(version, version),
+        schema: offer.schema,
+        capabilities: offer.capabilities.clone(),
         channels: vec![ProtocolChannel {
-            name: "request".to_owned(),
+            id: ProtocolChannelId(1),
+            debug_name: Some("request".to_owned()),
             mode: ChannelMode::RequestResponse,
             priority: 0,
             max_frame_bytes: 4 * 1024,
@@ -22,14 +28,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }],
     })?;
     let registry = registry.freeze();
-    let negotiated = registry.negotiate(&[ProtocolOffer {
-        namespace: "example.echo".to_owned(),
-        versions: VersionRange::new(version, version),
-    }])?;
+    let negotiated = registry.negotiate(std::slice::from_ref(&offer))?;
     let active = registry.activate(&negotiated)?;
     let channel = active.open_channel(ChannelOpenRequest {
-        protocol: ProtocolId::new("example.echo")?,
-        channel_name: "request".to_owned(),
+        protocol_id: offer.stable_id,
+        protocol_channel_id: ProtocolChannelId(1),
         channel_id: ChannelId(1),
         capacity: 4,
     })?;
@@ -41,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         MultiplexerLimits::default(),
         negotiated
             .iter()
-            .map(|selection| (selection.namespace.clone(), selection.version)),
+            .map(|selection| (selection.stable_id.wire_namespace(), selection.version)),
     )?;
     mux.open_channel(channel.config.clone())?;
     mux.enqueue(Envelope {

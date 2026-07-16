@@ -55,7 +55,7 @@ pub async fn run_session_transport_suite(
     let mut session = Session::established(negotiated.clone(), limits, 2).unwrap();
     let data_channel = ChannelConfig {
         key: ChannelKey {
-            namespace: "mutsuki.lilia".to_owned(),
+            namespace: ProtocolStableId::derive("mutsuki", "lilia").wire_namespace(),
             version: ProtocolVersion::new(1, 3),
             id: ChannelId(1),
         },
@@ -65,7 +65,7 @@ pub async fn run_session_transport_suite(
     };
     let control_channel = ChannelConfig {
         key: ChannelKey {
-            namespace: "mutsuki.distributed".to_owned(),
+            namespace: ProtocolStableId::derive("mutsuki", "distributed").wire_namespace(),
             version: ProtocolVersion::new(1, 3),
             id: ChannelId(2),
         },
@@ -143,10 +143,10 @@ fn identity(value: u8) -> Identity {
 }
 
 fn offer(namespace: &str) -> ProtocolOffer {
-    ProtocolOffer {
-        namespace: namespace.to_owned(),
-        versions: VersionRange::new(ProtocolVersion::new(1, 0), ProtocolVersion::new(1, 3)),
-    }
+    ProtocolOffer::from_debug_namespace(
+        namespace,
+        VersionRange::new(ProtocolVersion::new(1, 0), ProtocolVersion::new(1, 3)),
+    )
 }
 
 fn config(value: u8, session: u8, protocols: Vec<ProtocolOffer>) -> HandshakeConfig {
@@ -157,6 +157,9 @@ fn config(value: u8, session: u8, protocols: Vec<ProtocolOffer>) -> HandshakeCon
                 ProtocolVersion::new(1, 0),
                 ProtocolVersion::new(1, 2),
             ),
+            link_capabilities: LinkCapabilities::COMPACT_CHANNEL_ID
+                | LinkCapabilities::DATAGRAMS
+                | LinkCapabilities::TYPED_CONTROL,
             pairing_protocols: protocols.clone(),
             protocols,
             allow_pairing: true,

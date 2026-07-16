@@ -15,16 +15,22 @@ standard channel. Its wire/session details are documented in
 
 Each owner registers a `ProtocolDescriptor` before freezing the registry. A descriptor contains:
 
-- a globally namespaced protocol id and independent version range;
-- channel names with request/response, event, or stream mode;
+- a stable 128-bit protocol id, optional debug identity, and independent version range;
+- a structured schema reference/fingerprint and protocol-scoped capability words;
+- stable numeric channel ids plus optional debug names and request/response, event, or stream mode;
 - priority plus maximum frame, stream, and in-flight limits;
 - an explicit discardable marker allowed only for lossy events.
 
-The frozen registry produces handshake offers. Negotiation happens per namespace, so one
+The frozen registry produces typed handshake offers. Negotiation happens per stable id, so one
 incompatible protocol disappears from the resulting selection without closing another compatible
 protocol. `ActiveProtocolSet` and the restricted multiplexer reject channels that were not selected.
 Payloads are opaque; no task, file, debug-command, resource-manifest, or workspace field is parsed by
 Link.
+
+New owner adapters advertise `LinkCapabilities::TYPED_CONTROL`, encode built-in operations with the
+typed control codec, and install accepted numeric channels into the authenticated session mapping.
+See [Typed control wire contract](typed-control.md). Strings remain useful in configuration and
+diagnostics but are not wire authority.
 
 ## LiliaCode owner contract
 

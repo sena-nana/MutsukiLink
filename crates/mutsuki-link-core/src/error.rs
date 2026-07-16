@@ -36,6 +36,7 @@ pub enum HandshakeErrorKind {
     UnexpectedMessage,
     IncompatibleVersion,
     NoSharedProtocol,
+    ProtocolConflict,
     PairingDisabled,
     PeerNotTrusted,
     IdentityRejected,

@@ -10,10 +10,10 @@ fn identity(value: u8) -> Identity {
 }
 
 fn offer(namespace: &str) -> ProtocolOffer {
-    ProtocolOffer {
-        namespace: namespace.to_owned(),
-        versions: VersionRange::new(ProtocolVersion::new(1, 0), ProtocolVersion::new(1, 3)),
-    }
+    ProtocolOffer::from_debug_namespace(
+        namespace,
+        VersionRange::new(ProtocolVersion::new(1, 0), ProtocolVersion::new(1, 3)),
+    )
 }
 
 fn config(value: u8, session: u8, offers: Vec<ProtocolOffer>) -> HandshakeConfig {
@@ -24,6 +24,8 @@ fn config(value: u8, session: u8, offers: Vec<ProtocolOffer>) -> HandshakeConfig
                 ProtocolVersion::new(1, 0),
                 ProtocolVersion::new(1, 2),
             ),
+            link_capabilities: LinkCapabilities::COMPACT_CHANNEL_ID
+                | LinkCapabilities::TYPED_CONTROL,
             pairing_protocols: offers.clone(),
             protocols: offers,
             allow_pairing: true,
@@ -142,7 +144,7 @@ fn in_memory_transport_covers_handshake_mux_flow_control_drain_and_abort() {
     let mut session = Session::established(negotiated.clone(), limits, 2).unwrap();
     let lilia = ChannelConfig {
         key: ChannelKey {
-            namespace: "mutsuki.lilia".to_owned(),
+            namespace: ProtocolStableId::derive("mutsuki", "lilia").wire_namespace(),
             version: ProtocolVersion::new(1, 3),
             id: ChannelId(1),
         },
@@ -152,7 +154,7 @@ fn in_memory_transport_covers_handshake_mux_flow_control_drain_and_abort() {
     };
     let distributed = ChannelConfig {
         key: ChannelKey {
-            namespace: "mutsuki.distributed".to_owned(),
+            namespace: ProtocolStableId::derive("mutsuki", "distributed").wire_namespace(),
             version: ProtocolVersion::new(1, 3),
             id: ChannelId(2),
         },

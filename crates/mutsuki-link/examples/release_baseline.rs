@@ -5,10 +5,12 @@
 )]
 
 use mutsuki_link::{
-    AuthPath, ConnectContext, Connection, ConnectionActivityProfile, EndpointId, HandshakeConfig,
+    AuthPath, ConnectContext, Connection, ConnectionActivityProfile, ControlEnvelope, ControlFlags,
+    ControlIdentityMode, ControlModeGuard, ControlPayload, EndpointId, HandshakeConfig,
     HandshakeFrame, HandshakeMachine, HandshakeOutput, HandshakePolicy, HeartbeatAction,
-    HeartbeatController, HeartbeatPolicy, Identity, IdentityProof, PeerId, ProofDecision,
-    ProtocolOffer, ProtocolVersion, SessionId, TransportBudget, TransportErrorKind, VersionRange,
+    HeartbeatController, HeartbeatPolicy, Identity, IdentityProof, PeerId, Ping, ProofDecision,
+    ProtocolOffer, ProtocolVersion, RequestId, SessionId, TransportBudget, TransportErrorKind,
+    VersionRange, decode_control_envelope, encode_control_envelope,
     local::{self, LocalAddress, LocalListener},
     quic::{QuicConnector, QuicListener, QuicOptions},
     tcp::{self, TcpConfig, TcpListener},
@@ -30,6 +32,8 @@ const SHUTDOWN_BUDGET_MS: u128 = 2_000;
 const RTT_SAMPLE_COUNT: usize = 128;
 const CONTROL_SAMPLE_COUNT: usize = 32;
 const WARMUP_SAMPLES: usize = 16;
+const CONTROL_CODEC_ITERATIONS: u128 = 100_000;
+const MIN_CONTROL_CODEC_ROUNDTRIPS_PER_SECOND: u128 = 100_000;
 const THROUGHPUT_CASES: [(usize, usize); 4] = [
     (1024, 1024),
     (16 * 1024, 256),
@@ -67,6 +71,8 @@ struct ReleaseReport<'a> {
     logical_cpus: usize,
     handshake_us: u128,
     idle_tick_ns: u128,
+    typed_control_frame_bytes: usize,
+    typed_control_roundtrips_per_second: u128,
     baselines: &'a [Baseline],
 }
 
@@ -76,6 +82,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (idle_tick_ns, idle_actions) = measure_idle_state_machine()?;
     if idle_actions != 0 || idle_tick_ns > 100_000 {
         return Err("idle state-machine budget exceeded".into());
+    }
+    let (typed_control_frame_bytes, typed_control_roundtrips_per_second) =
+        measure_typed_control_codec()?;
+    if typed_control_roundtrips_per_second < MIN_CONTROL_CODEC_ROUNDTRIPS_PER_SECOND {
+        return Err("typed control codec throughput budget exceeded".into());
     }
 
     let mut baselines = Vec::new();
@@ -103,10 +114,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         );
     }
     println!(
-        "link_handshake={handshake_us}us idle_tick={idle_tick_ns}ns idle_actions={idle_actions} rtt_samples={RTT_SAMPLE_COUNT}"
+        "link_handshake={handshake_us}us idle_tick={idle_tick_ns}ns idle_actions={idle_actions} typed_control_frame={typed_control_frame_bytes}B typed_control_roundtrips={typed_control_roundtrips_per_second}/s rtt_samples={RTT_SAMPLE_COUNT}"
     );
     let report = ReleaseReport {
-        schema: "mutsuki-link-release-baseline/2.0.0",
+        schema: "mutsuki-link-release-baseline/2.1.0",
         smoke_only: true,
         claim_boundary: "Local loopback transport smoke only; not LAN, Wi-Fi, or production latency",
         operating_system: std::env::consts::OS,
@@ -114,6 +125,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         logical_cpus: std::thread::available_parallelism()?.get(),
         handshake_us,
         idle_tick_ns,
+        typed_control_frame_bytes,
+        typed_control_roundtrips_per_second,
         baselines: &baselines,
     };
     let json = serde_json::to_string_pretty(&report)?;
@@ -366,10 +379,10 @@ fn crypto_configs() -> Result<(ServerConfig, ClientConfig), Box<dyn Error>> {
 }
 
 fn measure_link_handshake() -> Result<u128, Box<dyn Error>> {
-    let offer = ProtocolOffer {
-        namespace: "example.release".to_owned(),
-        versions: VersionRange::new(ProtocolVersion::new(1, 0), ProtocolVersion::new(1, 0)),
-    };
+    let offer = ProtocolOffer::from_debug_namespace(
+        "example.release",
+        VersionRange::new(ProtocolVersion::new(1, 0), ProtocolVersion::new(1, 0)),
+    );
     let config = |value: u8| HandshakeConfig {
         identity: Identity {
             peer_id: PeerId::from_bytes([value; 32]),
@@ -378,6 +391,9 @@ fn measure_link_handshake() -> Result<u128, Box<dyn Error>> {
         },
         policy: HandshakePolicy {
             link_versions: offer.versions,
+            link_capabilities: mutsuki_link::LinkCapabilities::COMPACT_CHANNEL_ID
+                | mutsuki_link::LinkCapabilities::DATAGRAMS
+                | mutsuki_link::LinkCapabilities::TYPED_CONTROL,
             protocols: vec![offer.clone()],
             pairing_protocols: vec![offer.clone()],
             allow_pairing: true,
@@ -426,6 +442,31 @@ fn measure_idle_state_machine() -> Result<(u128, usize), Box<dyn Error>> {
         }
     }
     Ok((started.elapsed().as_nanos() / 100_000, actions))
+}
+
+fn measure_typed_control_codec() -> Result<(usize, u128), Box<dyn Error>> {
+    let guard = ControlModeGuard::new(ControlIdentityMode::TypedV1);
+    let mut envelope = ControlEnvelope::typed(
+        RequestId(0),
+        Some(SessionId::from_bytes([7; 16])),
+        ControlFlags::default(),
+        ControlPayload::Ping(Ping { nonce: 42 }),
+    );
+    let frame_bytes = encode_control_envelope(&guard, &envelope)?.len();
+    let started = Instant::now();
+    for request in 0..CONTROL_CODEC_ITERATIONS {
+        envelope.request_id = RequestId(u64::try_from(request)?);
+        let encoded = std::hint::black_box(encode_control_envelope(&guard, &envelope)?);
+        let decoded = std::hint::black_box(decode_control_envelope(&guard, &encoded)?);
+        if decoded.request_id != envelope.request_id {
+            return Err("typed control codec changed request identity".into());
+        }
+    }
+    let elapsed_nanos = started.elapsed().as_nanos().max(1);
+    Ok((
+        frame_bytes,
+        CONTROL_CODEC_ITERATIONS.saturating_mul(1_000_000_000) / elapsed_nanos,
+    ))
 }
 
 fn percentile(samples: &[u128], value: usize) -> u128 {

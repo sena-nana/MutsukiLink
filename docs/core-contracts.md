@@ -9,14 +9,20 @@ cryptographic implementation, discovery provider, or application serializer.
 `ConnectionId` one connection attempt, and `SessionId` one negotiated session. Distinct Rust types
 prevent accidental substitution.
 
-The handshake negotiates a Link protocol version and one or more namespaced upper protocols. It has
+The handshake negotiates a Link protocol version and one or more typed upper protocols. It has
 separate first-pairing and trusted-reconnect paths. Identity proofs remain opaque: the state machine
 emits a `VerificationRequest`, and an external owner returns `ProofDecision`. Public handshake errors
 contain only a stable category and sanitized message.
 
 First pairing advertises only `HandshakePolicy::pairing_protocols`; the full protocol catalog is used
 only for a trusted reconnect. An unpaired discovery candidate therefore cannot enumerate sensitive
-application namespaces through the handshake.
+application protocols through the handshake.
+
+Control frames use stable numeric opcodes, explicit typed payload codecs, `ProtocolStableId`,
+`ProtocolChannelId`, `SchemaRef`, and bounded capability bitsets. Human-readable identities are
+optional debug/configuration metadata and never authorize dispatch. The exact byte contract,
+compatibility mode negotiation, and channel mapping rules are defined in
+[Typed control wire contract](typed-control.md).
 
 ## Transport readiness and shutdown
 
@@ -36,7 +42,8 @@ Sessions progress through `Connecting`, `Handshaking`, `Established`, `Draining`
 `Closed` or `Failed` state. `begin_drain` stops the lifecycle from returning to established;
 `finish_drain` requires all queued frames to be sent. `abort` discards them immediately.
 
-Every channel key includes protocol namespace, version, and numeric id. Request-response, event,
+Every legacy data channel key includes protocol namespace, version, and numeric id; the compact
+envelope migration consumes the typed session-local mapping instead. Request-response, event,
 and stream modes share only the generic envelope; payload bytes are owned by the upper protocol's
 chosen codec. Limits cover frame bytes, declared nesting depth, channels, per-channel queue capacity,
 total queued data, and event subscribers.
@@ -92,11 +99,13 @@ migrates work or changes application capabilities.
 ## Upper protocol registry
 
 `ProtocolRegistry` accepts bounded `ProtocolDescriptor` values before startup and then consumes
-itself into `FrozenProtocolRegistry`. Each descriptor declares a namespaced id, version range, channel
-name/mode, priority, frame/stream limit, in-flight bound, and whether an event may be discarded under
-pressure. Link stores payloads as opaque bytes and never registers product message schemas.
+itself into `FrozenProtocolRegistry`. Each descriptor declares a stable ID, optional debug identity,
+version range, schema fingerprint, bounded capability set, and numeric channel descriptors with
+mode, priority, frame/stream limit, in-flight bound, and discard behavior. Link stores payloads as
+opaque bytes and records schema identity without interpreting product schemas.
 
-Negotiation intersects each namespace independently. An incompatible product protocol is omitted
-without disabling another shared protocol. `ActiveProtocolSet` can create channel configurations only
-for negotiated ids, versions, and declared channel names; `Multiplexer::restricted` independently
-rejects an open for any namespace/version absent from the handshake selection.
+Negotiation intersects each stable protocol independently. An incompatible product protocol is
+omitted without disabling another shared protocol. Identity/schema collisions fail closed.
+`ActiveProtocolSet` can create channel configurations only for negotiated IDs, versions, and
+declared numeric channel IDs; `Multiplexer::restricted` independently rejects an open absent from
+the handshake selection.
