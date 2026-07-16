@@ -32,6 +32,7 @@ rcgen.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+stats_alloc.workspace = true
 
 [[example]]
 name = "manual_server"

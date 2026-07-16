@@ -26,11 +26,13 @@ fails when a loopback transport exceeds 5 seconds to connect, control or RTT P99
 1 KiB/16 KiB/64 KiB/1 MiB case falls below 4 MiB/s, or shutdown exceeds 2 seconds. It uses warm-up
 and 128 RTT samples and emits structured machine/transport JSON. The separate mux baseline covers
 1/16/64 active channels across the same payload sizes, verifies retained queue storage does not grow
-after warm-up, and measures reserved control latency under 64 saturated data channels. Set
+after warm-up, directly counts steady-state allocation calls and allocated bytes, and measures
+reserved control latency under 64 saturated data channels. Set
 `MUTSUKI_LINK_BASELINE=artifacts/performance/mux-reference-v1-smoke.json` to apply the historical 2x
-relative latency/throughput/fixed-size gate; a 5 us timer-jitter floor avoids turning sub-microsecond
-scheduler noise into CI failures. Both reports are loopback/in-memory smoke-only evidence and do not
-represent LAN or Wi-Fi performance.
+relative latency/throughput/fixed-size/allocation gate; a zero-allocation reference rejects any new
+steady-state allocation, while non-zero references use the same 2x threshold. A 5 us timer-jitter
+floor avoids turning sub-microsecond scheduler noise into CI failures. Both reports are
+loopback/in-memory smoke-only evidence and do not represent LAN or Wi-Fi performance.
 
 CI additionally verifies:
 

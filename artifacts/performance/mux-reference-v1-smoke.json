@@ -1,5 +1,5 @@
 {
-  "schema": "mutsuki-link-mux-baseline/1.0.0",
+  "schema": "mutsuki-link-mux-baseline/1.1.0",
   "smoke_only": true,
   "claim_boundary": "Local in-memory scheduler benchmark only; not LAN, Wi-Fi, or production transport performance",
   "operating_system": "macos",
@@ -21,7 +21,9 @@
       "p95_ns_per_frame": 75,
       "p99_ns_per_frame": 75,
       "frames_per_second": 13333333,
-      "steady_queue_slot_growth": 0
+      "steady_queue_slot_growth": 0,
+      "steady_allocation_calls_per_cycle": 0,
+      "steady_allocated_bytes_per_cycle": 0
     },
     {
       "channels": 1,
@@ -31,7 +33,9 @@
       "p95_ns_per_frame": 74,
       "p99_ns_per_frame": 74,
       "frames_per_second": 16129032,
-      "steady_queue_slot_growth": 0
+      "steady_queue_slot_growth": 0,
+      "steady_allocation_calls_per_cycle": 0,
+      "steady_allocated_bytes_per_cycle": 0
     },
     {
       "channels": 1,
@@ -41,7 +45,9 @@
       "p95_ns_per_frame": 63,
       "p99_ns_per_frame": 63,
       "frames_per_second": 16129032,
-      "steady_queue_slot_growth": 0
+      "steady_queue_slot_growth": 0,
+      "steady_allocation_calls_per_cycle": 0,
+      "steady_allocated_bytes_per_cycle": 0
     },
     {
       "channels": 1,
@@ -51,7 +57,9 @@
       "p95_ns_per_frame": 65,
       "p99_ns_per_frame": 65,
       "frames_per_second": 15873015,
-      "steady_queue_slot_growth": 0
+      "steady_queue_slot_growth": 0,
+      "steady_allocation_calls_per_cycle": 0,
+      "steady_allocated_bytes_per_cycle": 0
     },
     {
       "channels": 16,
@@ -61,7 +69,9 @@
       "p95_ns_per_frame": 160,
       "p99_ns_per_frame": 160,
       "frames_per_second": 9523809,
-      "steady_queue_slot_growth": 0
+      "steady_queue_slot_growth": 0,
+      "steady_allocation_calls_per_cycle": 0,
+      "steady_allocated_bytes_per_cycle": 0
     },
     {
       "channels": 16,
@@ -71,7 +81,9 @@
       "p95_ns_per_frame": 92,
       "p99_ns_per_frame": 92,
       "frames_per_second": 11235955,
-      "steady_queue_slot_growth": 0
+      "steady_queue_slot_growth": 0,
+      "steady_allocation_calls_per_cycle": 0,
+      "steady_allocated_bytes_per_cycle": 0
     },
     {
       "channels": 16,
@@ -81,7 +93,9 @@
       "p95_ns_per_frame": 92,
       "p99_ns_per_frame": 92,
       "frames_per_second": 11235955,
-      "steady_queue_slot_growth": 0
+      "steady_queue_slot_growth": 0,
+      "steady_allocation_calls_per_cycle": 0,
+      "steady_allocated_bytes_per_cycle": 0
     },
     {
       "channels": 16,
@@ -91,7 +105,9 @@
       "p95_ns_per_frame": 90,
       "p99_ns_per_frame": 90,
       "frames_per_second": 11235955,
-      "steady_queue_slot_growth": 0
+      "steady_queue_slot_growth": 0,
+      "steady_allocation_calls_per_cycle": 0,
+      "steady_allocated_bytes_per_cycle": 0
     },
     {
       "channels": 64,
@@ -101,7 +117,9 @@
       "p95_ns_per_frame": 322,
       "p99_ns_per_frame": 322,
       "frames_per_second": 3412969,
-      "steady_queue_slot_growth": 0
+      "steady_queue_slot_growth": 0,
+      "steady_allocation_calls_per_cycle": 0,
+      "steady_allocated_bytes_per_cycle": 0
     },
     {
       "channels": 64,
@@ -111,7 +129,9 @@
       "p95_ns_per_frame": 317,
       "p99_ns_per_frame": 317,
       "frames_per_second": 3389830,
-      "steady_queue_slot_growth": 0
+      "steady_queue_slot_growth": 0,
+      "steady_allocation_calls_per_cycle": 0,
+      "steady_allocated_bytes_per_cycle": 0
     },
     {
       "channels": 64,
@@ -121,7 +141,9 @@
       "p95_ns_per_frame": 320,
       "p99_ns_per_frame": 320,
       "frames_per_second": 3278688,
-      "steady_queue_slot_growth": 0
+      "steady_queue_slot_growth": 0,
+      "steady_allocation_calls_per_cycle": 0,
+      "steady_allocated_bytes_per_cycle": 0
     },
     {
       "channels": 64,
@@ -131,7 +153,9 @@
       "p95_ns_per_frame": 296,
       "p99_ns_per_frame": 296,
       "frames_per_second": 3496503,
-      "steady_queue_slot_growth": 0
+      "steady_queue_slot_growth": 0,
+      "steady_allocation_calls_per_cycle": 0,
+      "steady_allocated_bytes_per_cycle": 0
     }
   ]
 }

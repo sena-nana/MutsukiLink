@@ -6,6 +6,7 @@ use mutsuki_link::{
     ProtocolVersion, SessionId,
 };
 use serde::{Deserialize, Serialize};
+use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 use std::error::Error;
 use std::fs;
 use std::time::Instant;
@@ -16,7 +17,10 @@ const SAMPLES: usize = 7;
 const RELATIVE_REGRESSION_FACTOR: u128 = 2;
 const SCHEDULER_JITTER_FLOOR_NS: u128 = 5_000;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[global_allocator]
+static GLOBAL: &StatsAlloc<std::alloc::System> = &INSTRUMENTED_SYSTEM;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct MatrixEntry {
     channels: usize,
     payload_bytes: usize,
@@ -26,16 +30,18 @@ struct MatrixEntry {
     p99_ns_per_frame: u128,
     frames_per_second: u128,
     steady_queue_slot_growth: isize,
+    steady_allocation_calls_per_cycle: usize,
+    steady_allocated_bytes_per_cycle: usize,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct ControlLatency {
     p50: u128,
     p95: u128,
     p99: u128,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct Report {
     schema: String,
     smoke_only: bool,
@@ -51,7 +57,7 @@ struct Report {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let report = Report {
-        schema: "mutsuki-link-mux-baseline/1.0.0".to_owned(),
+        schema: "mutsuki-link-mux-baseline/1.1.0".to_owned(),
         smoke_only: true,
         claim_boundary: "Local in-memory scheduler benchmark only; not LAN, Wi-Fi, or production transport performance".to_owned(),
         operating_system: std::env::consts::OS.to_owned(),
@@ -94,13 +100,28 @@ fn benchmark_scenario(
     let bytes_per_cycle = channels.saturating_mul(payload_bytes).max(1);
     let cycles = (64 * 1024 * 1024 / bytes_per_cycle).clamp(4, 4096);
     let mut samples = Vec::with_capacity(SAMPLES);
+    let mut max_allocation_calls = 0;
+    let mut max_allocated_bytes = 0;
     for _ in 0..SAMPLES {
+        let allocation_region = Region::new(GLOBAL);
         let started = Instant::now();
         for _ in 0..cycles {
             cycle(&mut mux, &mut frames)?;
         }
+        let elapsed = started.elapsed();
+        let allocations = allocation_region.change();
+        max_allocation_calls = max_allocation_calls.max(
+            allocations
+                .allocations
+                .saturating_add(allocations.reallocations),
+        );
+        max_allocated_bytes = max_allocated_bytes.max(
+            allocations
+                .bytes_allocated
+                .saturating_add_signed(allocations.bytes_reallocated),
+        );
         let frames_processed = cycles.saturating_mul(channels).max(1);
-        samples.push(started.elapsed().as_nanos() / frames_processed as u128);
+        samples.push(elapsed.as_nanos() / frames_processed as u128);
     }
     let after = mux.storage_snapshot();
     let before_slots = before
@@ -126,6 +147,8 @@ fn benchmark_scenario(
         p99_ns_per_frame: percentile(&samples, 99),
         frames_per_second: 1_000_000_000_u128 / p50.max(1),
         steady_queue_slot_growth: growth,
+        steady_allocation_calls_per_cycle: max_allocation_calls.div_ceil(cycles),
+        steady_allocated_bytes_per_cycle: max_allocated_bytes.div_ceil(cycles),
     })
 }
 
@@ -257,6 +280,34 @@ fn compare_baseline(current: &Report, baseline: &Report) -> Result<(), Box<dyn E
         if entry.steady_queue_slot_growth != 0 {
             return Err("mux steady-state queue storage grew".into());
         }
+        if entry.steady_allocation_calls_per_cycle
+            > reference
+                .steady_allocation_calls_per_cycle
+                .saturating_mul(2)
+        {
+            return Err(format!(
+                "mux allocation-count regression for {} channels / {} bytes: {} > {}",
+                entry.channels,
+                entry.payload_bytes,
+                entry.steady_allocation_calls_per_cycle,
+                reference
+                    .steady_allocation_calls_per_cycle
+                    .saturating_mul(2)
+            )
+            .into());
+        }
+        if entry.steady_allocated_bytes_per_cycle
+            > reference.steady_allocated_bytes_per_cycle.saturating_mul(2)
+        {
+            return Err(format!(
+                "mux allocated-byte regression for {} channels / {} bytes: {} > {}",
+                entry.channels,
+                entry.payload_bytes,
+                entry.steady_allocated_bytes_per_cycle,
+                reference.steady_allocated_bytes_per_cycle.saturating_mul(2)
+            )
+            .into());
+        }
     }
     let control_limit = baseline
         .control_under_saturated_data
@@ -279,4 +330,37 @@ fn percentile(samples: &[u128], value: usize) -> u128 {
         .div_ceil(100)
         .saturating_sub(1);
     samples[index.min(samples.len().saturating_sub(1))]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reference() -> Report {
+        serde_json::from_str(include_str!(
+            "../../../artifacts/performance/mux-reference-v1-smoke.json"
+        ))
+        .expect("committed mux reference must match the current schema")
+    }
+
+    #[test]
+    fn allocation_gate_rejects_new_allocations_against_zero_allocation_reference() {
+        let baseline = reference();
+        let mut current = baseline.clone();
+        current.matrix[0].steady_allocation_calls_per_cycle = 1;
+
+        assert!(compare_baseline(&current, &baseline).is_err());
+    }
+
+    #[test]
+    fn allocation_gate_rejects_more_than_two_times_a_nonzero_reference() {
+        let mut baseline = reference();
+        baseline.matrix[0].steady_allocation_calls_per_cycle = 1;
+        let mut current = baseline.clone();
+        current.matrix[0].steady_allocation_calls_per_cycle = 2;
+        assert!(compare_baseline(&current, &baseline).is_ok());
+
+        current.matrix[0].steady_allocation_calls_per_cycle = 3;
+        assert!(compare_baseline(&current, &baseline).is_err());
+    }
 }
