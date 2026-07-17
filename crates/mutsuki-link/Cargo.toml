@@ -60,5 +60,8 @@ required-features = ["local", "tcp", "quic"]
 [[example]]
 name = "mux_baseline"
 
+[[example]]
+name = "performance_model_raw"
+
 [lints]
 workspace = true

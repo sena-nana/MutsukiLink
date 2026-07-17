@@ -35,8 +35,8 @@ const WARMUP_SAMPLES: usize = 16;
 const CONTROL_CODEC_ITERATIONS: u128 = 100_000;
 const MIN_CONTROL_CODEC_ROUNDTRIPS_PER_SECOND: u128 = 100_000;
 const THROUGHPUT_CASES: [(usize, usize); 4] = [
-    (1024, 1024),
-    (16 * 1024, 256),
+    (256, 4096),
+    (4 * 1024, 1024),
     (64 * 1024, 64),
     (1024 * 1024, 8),
 ];
@@ -55,7 +55,11 @@ struct Baseline {
     rtt_p50_us: u128,
     rtt_p95_us: u128,
     rtt_p99_us: u128,
+    idle_control_samples_us: Vec<u128>,
     saturated_control_p99_us: u128,
+    rtt_samples_us: Vec<u128>,
+    saturated_control_samples_us: Vec<u128>,
+    control_only_frames_per_second: u128,
     throughput: Vec<ThroughputSample>,
     fixed_handle_bytes: usize,
     shutdown_us: u128,
@@ -71,6 +75,7 @@ struct ReleaseReport<'a> {
     logical_cpus: usize,
     handshake_us: u128,
     idle_tick_ns: u128,
+    heartbeat_due_ns: u128,
     typed_control_frame_bytes: usize,
     typed_control_roundtrips_per_second: u128,
     baselines: &'a [Baseline],
@@ -79,7 +84,7 @@ struct ReleaseReport<'a> {
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<(), Box<dyn Error>> {
     let handshake_us = measure_link_handshake()?;
-    let (idle_tick_ns, idle_actions) = measure_idle_state_machine()?;
+    let (idle_tick_ns, idle_actions, heartbeat_due_ns) = measure_idle_state_machine()?;
     if idle_actions != 0 || idle_tick_ns > 100_000 {
         return Err("idle state-machine budget exceeded".into());
     }
@@ -125,6 +130,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         logical_cpus: std::thread::available_parallelism()?.get(),
         handshake_us,
         idle_tick_ns,
+        heartbeat_due_ns,
         typed_control_frame_bytes,
         typed_control_roundtrips_per_second,
         baselines: &baselines,
@@ -244,6 +250,34 @@ where
         rtts.push(started.elapsed().as_micros());
     }
 
+    let mut idle_control_samples = Vec::with_capacity(CONTROL_SAMPLE_COUNT);
+    for _ in 0..CONTROL_SAMPLE_COUNT {
+        let started = Instant::now();
+        send_with_retry(&mut client, b"idle-control", true).await?;
+        let message = receive_with_deadline(&mut server, true).await?;
+        if message != b"idle-control" {
+            return Err("idle control payload mismatch".into());
+        }
+        idle_control_samples.push(started.elapsed().as_micros());
+    }
+
+    let control_only_started = Instant::now();
+    let mut control_only_frames = 0_u128;
+    for _ in 0..128 {
+        for _ in 0..32 {
+            send_with_retry(&mut client, b"control-only", true).await?;
+        }
+        for _ in 0..32 {
+            let message = receive_with_deadline(&mut server, true).await?;
+            if message != b"control-only" {
+                return Err("control-only payload mismatch".into());
+            }
+            control_only_frames += 1;
+        }
+    }
+    let control_only_frames_per_second = control_only_frames.saturating_mul(1_000_000_000)
+        / control_only_started.elapsed().as_nanos().max(1);
+
     let mut control_samples = Vec::with_capacity(CONTROL_SAMPLE_COUNT);
     for _ in 0..CONTROL_SAMPLE_COUNT {
         for _ in 0..32 {
@@ -296,6 +330,7 @@ where
     let shutdown_us = shutdown_started.elapsed().as_micros();
 
     rtts.sort_unstable();
+    idle_control_samples.sort_unstable();
     control_samples.sort_unstable();
     Ok(Baseline {
         transport,
@@ -303,7 +338,11 @@ where
         rtt_p50_us: percentile(&rtts, 50),
         rtt_p95_us: percentile(&rtts, 95),
         rtt_p99_us: percentile(&rtts, 99),
+        idle_control_samples_us: idle_control_samples,
         saturated_control_p99_us: percentile(&control_samples, 99),
+        rtt_samples_us: rtts,
+        saturated_control_samples_us: control_samples,
+        control_only_frames_per_second,
         throughput,
         fixed_handle_bytes,
         shutdown_us,
@@ -448,7 +487,7 @@ fn sent(outputs: Vec<HandshakeOutput>) -> Result<HandshakeFrame, Box<dyn Error>>
         .ok_or_else(|| "handshake produced no outbound frame".into())
 }
 
-fn measure_idle_state_machine() -> Result<(u128, usize), Box<dyn Error>> {
+fn measure_idle_state_machine() -> Result<(u128, usize, u128), Box<dyn Error>> {
     let mut heartbeat = HeartbeatController::new(HeartbeatPolicy::default(), 0)?;
     let started = Instant::now();
     let mut actions = 0;
@@ -458,7 +497,13 @@ fn measure_idle_state_machine() -> Result<(u128, usize), Box<dyn Error>> {
             actions += 1;
         }
     }
-    Ok((started.elapsed().as_nanos() / 100_000, actions))
+    let idle_tick_ns = started.elapsed().as_nanos() / 100_000;
+    let mut due = HeartbeatController::new(HeartbeatPolicy::default(), 0)?;
+    let due_started = Instant::now();
+    if due.tick(u64::MAX / 2, ConnectionActivityProfile::Idle) == HeartbeatAction::None {
+        return Err("heartbeat did not become due".into());
+    }
+    Ok((idle_tick_ns, actions, due_started.elapsed().as_nanos()))
 }
 
 fn measure_typed_control_codec() -> Result<(usize, u128), Box<dyn Error>> {

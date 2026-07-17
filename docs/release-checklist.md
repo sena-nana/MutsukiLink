@@ -13,6 +13,7 @@ cargo metadata --locked --format-version 1
 bash scripts/check-boundaries.sh
 cargo run --release -p mutsuki-link --example release_baseline --features local,tcp,quic
 cargo run --release -p mutsuki-link --example mux_baseline
+python3 scripts/run-performance-model.py --mode reference
 cargo package -p mutsuki-link-core
 cargo package -p mutsuki-link --list
 cargo package -p ntp-mutsuki-link --list
@@ -23,16 +24,17 @@ cannot verify an unpublished dependency from its local archive. The manifest sti
 versioned internal crates and contains no repository-external paths. After publishing the internal
 crates, replace the list check with a normal `cargo package -p mutsuki-link`. The transport baseline
 fails when a loopback transport exceeds 5 seconds to connect, control or RTT P99 exceeds 50 ms, any
-1 KiB/16 KiB/64 KiB/1 MiB case falls below 4 MiB/s, or shutdown exceeds 2 seconds. It uses warm-up
+256 B/4 KiB/64 KiB/1 MiB case falls below 4 MiB/s, or shutdown exceeds 2 seconds. It uses warm-up
 and 128 RTT samples and emits structured machine/transport JSON. The separate mux baseline covers
-1/16/64 active channels across the same payload sizes, verifies retained queue storage does not grow
+1/16/56 active channels across the same payload sizes, verifies retained queue storage does not grow
 after warm-up, directly counts steady-state allocation calls and allocated bytes, and measures
-reserved control latency under 64 saturated data channels. Set
-`MUTSUKI_LINK_BASELINE=artifacts/performance/mux-reference-v1-smoke.json` to apply the historical 2x
-relative latency/throughput/fixed-size/allocation gate; a zero-allocation reference rejects any new
-steady-state allocation, while non-zero references use the same 2x threshold. A 5 us timer-jitter
-floor avoids turning sub-microsecond scheduler noise into CI failures. Both reports are
-loopback/in-memory smoke-only evidence and do not represent LAN or Wi-Fi performance.
+reserved control latency under saturated data channels. `run-performance-model.py` migrates those
+fixtures into the shared report contract and adds the bounded receive, latest-only Datagram, and
+reconnect correctness counters. Public CI is a correctness/smoke gate only. Historical comparison
+and release approval use fixed-runner reports retained by this repository under
+`artifacts/performance`; legacy pre-v1 JSON remains clearly labelled. Approval uses the shared
+MutsukiCore exact-byte contract and never promotes a newly generated report automatically.
+Loopback/in-memory reports do not represent LAN, Wi-Fi, mobile, or production latency.
 
 CI additionally verifies:
 

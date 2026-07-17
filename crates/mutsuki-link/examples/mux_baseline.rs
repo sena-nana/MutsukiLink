@@ -11,8 +11,8 @@ use std::error::Error;
 use std::fs;
 use std::time::Instant;
 
-const PAYLOAD_SIZES: [usize; 4] = [1024, 16 * 1024, 64 * 1024, 1024 * 1024];
-const CHANNEL_COUNTS: [usize; 3] = [1, 16, 64];
+const PAYLOAD_SIZES: [usize; 4] = [256, 4 * 1024, 64 * 1024, 1024 * 1024];
+const CHANNEL_COUNTS: [usize; 3] = [1, 16, 56];
 const SAMPLES: usize = 7;
 const RELATIVE_REGRESSION_FACTOR: u128 = 2;
 const SCHEDULER_JITTER_FLOOR_NS: u128 = 5_000;

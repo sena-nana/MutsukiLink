@@ -1,3 +1,6 @@
 /target/
+__pycache__/
+*.py[cod]
 *.swp
 .DS_Store
+/artifacts/performance/issue21-macos-arm64-provisional/

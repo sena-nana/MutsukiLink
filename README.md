@@ -46,7 +46,13 @@ cargo run -p mutsuki-link --example discovery_pairing --features discovery,pairi
 cargo run -p mutsuki-link --example local_sidecar --features local
 cargo run -p mutsuki-link --example multiplex
 cargo run --release -p mutsuki-link --example release_baseline --features local,tcp,quic
+python3 scripts/run-performance-model.py --mode smoke
 ```
+
+The Python entry point emits the shared Mutsuki Performance Model v1 report for the local, TCP,
+QUIC, multiplex, backpressure, latest-only Datagram, and reconnect fixtures. See
+[performance measurement](docs/performance-model.md) for the exact boundaries and for the
+difference between public correctness smoke runs and fixed-machine reference history.
 
 See [upper protocol integration](docs/protocol-integration.md) for owner-crate boundaries and
 gradual migration guidance.

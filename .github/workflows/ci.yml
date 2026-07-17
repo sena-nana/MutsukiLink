@@ -50,10 +50,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo run --release -p mutsuki-link --example release_baseline --features local,tcp,quic
-      - run: cargo run --release -p mutsuki-link --example mux_baseline
-        env:
-          MUTSUKI_LINK_BASELINE: artifacts/performance/mux-reference-v1-smoke.json
+      - run: python3 scripts/run-performance-model.py --mode smoke --output target/mutsuki-benchmarks/link-smoke.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: link-performance-smoke
+          path: |
+            target/mutsuki-benchmarks/link-smoke.json
+            target/mutsuki-benchmarks/link-smoke.analysis.json
       - run: cargo run --release -p mutsuki-link --example compact_data_baseline
       - run: cargo package -p mutsuki-link-core --allow-dirty
       - run: cargo package -p mutsuki-link --allow-dirty --list

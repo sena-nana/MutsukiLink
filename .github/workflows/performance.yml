@@ -1,0 +1,41 @@
+name: Performance reference
+
+on:
+  schedule:
+    - cron: "37 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixed-reference:
+    name: Fixed reference (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            labels: [self-hosted, mutsuki-reference, macOS, ARM64]
+          - name: windows-x64
+            labels: [self-hosted, mutsuki-reference, Windows, X64]
+    runs-on: ${{ matrix.labels }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Run owner reference
+        shell: bash
+        run: >-
+          python scripts/run-performance-model.py
+          --mode reference
+          --output artifacts/performance/reference-${{ matrix.name }}/report.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: link-reference-${{ matrix.name }}-${{ github.run_id }}
+          path: artifacts/performance/reference-${{ matrix.name }}/
+          retention-days: 90
+          if-no-files-found: error
