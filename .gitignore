@@ -4,3 +4,4 @@ __pycache__/
 *.swp
 .DS_Store
 /artifacts/performance/issue21-macos-arm64-provisional/
+/artifacts/performance/reference-*/
