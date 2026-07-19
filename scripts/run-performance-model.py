@@ -113,11 +113,14 @@ def child_usage() -> tuple[float, int, int]:
     return ((usage.ru_utime + usage.ru_stime) * 1e9, rss, context_switches)
 
 
-def run_json(binary: pathlib.Path, path: pathlib.Path) -> dict:
+def run_json(
+    binary: pathlib.Path, path: pathlib.Path, *, enforce_smoke_budgets: bool = True
+) -> dict:
     before_cpu, _, before_context_switches = child_usage()
     env = os.environ.copy()
     env.pop("MUTSUKI_LINK_BASELINE", None)
     env["MUTSUKI_LINK_OUTPUT"] = str(path)
+    env["MUTSUKI_LINK_ENFORCE_SMOKE_BUDGETS"] = "1" if enforce_smoke_budgets else "0"
     subprocess.run([str(binary)], cwd=ROOT, env=env, check=True, stdout=subprocess.DEVNULL)
     after_cpu, rss, after_context_switches = child_usage()
     report = json.loads(path.read_text())
@@ -128,7 +131,7 @@ def run_json(binary: pathlib.Path, path: pathlib.Path) -> dict:
 
 
 def collect(
-    warmup: int, samples: int
+    mode: str, warmup: int, samples: int
 ) -> tuple[list[dict], list[dict], list[dict], float]:
     quic_test_started = time.perf_counter_ns()
     subprocess.run(
@@ -170,7 +173,11 @@ def collect(
         temporary = pathlib.Path(temporary)
         for index in range(warmup + samples):
             current = [
-                run_json(release, temporary / f"release-{index}.json"),
+                run_json(
+                    release,
+                    temporary / f"release-{index}.json",
+                    enforce_smoke_budgets=mode == "smoke",
+                ),
                 run_json(mux, temporary / f"mux-{index}.json"),
                 run_json(raw, temporary / f"raw-{index}.json"),
             ]
@@ -489,7 +496,7 @@ def main() -> None:
     default_warmup, default_samples = ((0, 1) if args.mode == "smoke" else (1, 5))
     warmup = default_warmup if args.warmup is None else args.warmup
     samples = default_samples if args.samples is None else max(1, args.samples)
-    release, mux, raw, quic_test_elapsed_ns = collect(warmup, samples)
+    release, mux, raw, quic_test_elapsed_ns = collect(args.mode, warmup, samples)
     failures: list[str] = []
     cases = release_cases(release, failures)
     cases.extend(mux_cases(mux, failures))
