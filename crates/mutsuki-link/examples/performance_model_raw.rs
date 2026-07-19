@@ -62,12 +62,12 @@ fn bounded_control_priority() -> Result<RawCase, Box<dyn Error>> {
     let allocation = Region::new(GLOBAL);
     let started = Instant::now();
     sender.try_send_control(b"control")?;
-    let received = receiver
+    let received_control = receiver
         .try_receive_control()?
         .ok_or("missing control frame")?;
     let latency_ns = started.elapsed().as_nanos();
     let allocation = allocation.change();
-    if received != b"control" || blocked.kind != TransportErrorKind::WouldBlock {
+    if received_control != b"control" || blocked.kind != TransportErrorKind::WouldBlock {
         return Err("bounded control priority invariant failed".into());
     }
     Ok(RawCase {

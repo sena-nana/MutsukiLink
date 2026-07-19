@@ -83,9 +83,8 @@ struct ReleaseReport<'a> {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let enforce_smoke_budgets = std::env::var("MUTSUKI_LINK_ENFORCE_SMOKE_BUDGETS")
-        .map(|value| value != "0")
-        .unwrap_or(true);
+    let enforce_smoke_budgets =
+        std::env::var("MUTSUKI_LINK_ENFORCE_SMOKE_BUDGETS").map_or(true, |value| value != "0");
     let handshake_us = measure_link_handshake()?;
     let (idle_tick_ns, idle_actions, heartbeat_due_ns) = measure_idle_state_machine()?;
     if enforce_smoke_budgets && (idle_actions != 0 || idle_tick_ns > 100_000) {
