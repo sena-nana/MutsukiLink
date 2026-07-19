@@ -1,0 +1,353 @@
+{
+  "classification": "environmental-noise",
+  "correctness_failures": [],
+  "noisy_cases": [
+    {
+      "case_id": "link.handshake.state-machine",
+      "dimensions": {
+        "boundary": "in-memory-state-machine"
+      },
+      "relative_mad": 0.22727272727272727
+    },
+    {
+      "case_id": "link.transport.connect",
+      "dimensions": {
+        "network_profile": "loopback-local-ipc",
+        "topology": "single-machine-loopback",
+        "transport": "local"
+      },
+      "relative_mad": 0.14594594594594595
+    },
+    {
+      "case_id": "link.transport.rtt",
+      "dimensions": {
+        "network_profile": "loopback-local-ipc",
+        "topology": "single-machine-loopback",
+        "transport": "local"
+      },
+      "relative_mad": 0.24561403508771928
+    },
+    {
+      "case_id": "link.transport.saturated-control",
+      "dimensions": {
+        "network_profile": "loopback-local-ipc",
+        "topology": "single-machine-loopback",
+        "transport": "local"
+      },
+      "relative_mad": 0.37254901960784315
+    },
+    {
+      "case_id": "link.transport.shutdown",
+      "dimensions": {
+        "network_profile": "loopback-local-ipc",
+        "topology": "single-machine-loopback",
+        "transport": "local"
+      },
+      "relative_mad": 0.0625
+    },
+    {
+      "case_id": "link.transport.idle-control",
+      "dimensions": {
+        "network_profile": "loopback-local-ipc",
+        "topology": "single-machine-loopback",
+        "transport": "local"
+      },
+      "relative_mad": 0.42857142857142855
+    },
+    {
+      "case_id": "link.transport.control-only",
+      "dimensions": {
+        "network_profile": "loopback-local-ipc",
+        "topology": "single-machine-loopback",
+        "transport": "local"
+      },
+      "relative_mad": 0.0692564024887564
+    },
+    {
+      "case_id": "link.transport.throughput",
+      "dimensions": {
+        "network_profile": "loopback-local-ipc",
+        "payload_bytes": 256,
+        "topology": "single-machine-loopback",
+        "transport": "local"
+      },
+      "relative_mad": 0.1760846180010095
+    },
+    {
+      "case_id": "link.transport.throughput",
+      "dimensions": {
+        "network_profile": "loopback-local-ipc",
+        "payload_bytes": 4096,
+        "topology": "single-machine-loopback",
+        "transport": "local"
+      },
+      "relative_mad": 0.1492234547673403
+    },
+    {
+      "case_id": "link.transport.throughput",
+      "dimensions": {
+        "network_profile": "loopback-local-ipc",
+        "payload_bytes": 65536,
+        "topology": "single-machine-loopback",
+        "transport": "local"
+      },
+      "relative_mad": 0.16931062218665904
+    },
+    {
+      "case_id": "link.transport.throughput",
+      "dimensions": {
+        "network_profile": "loopback-local-ipc",
+        "payload_bytes": 1048576,
+        "topology": "single-machine-loopback",
+        "transport": "local"
+      },
+      "relative_mad": 0.16903325065109134
+    },
+    {
+      "case_id": "link.transport.connect",
+      "dimensions": {
+        "network_profile": "loopback-quic",
+        "topology": "single-machine-loopback",
+        "transport": "quic"
+      },
+      "relative_mad": 0.23124516627996908
+    },
+    {
+      "case_id": "link.transport.rtt",
+      "dimensions": {
+        "network_profile": "loopback-quic",
+        "topology": "single-machine-loopback",
+        "transport": "quic"
+      },
+      "relative_mad": 0.23958333333333334
+    },
+    {
+      "case_id": "link.transport.saturated-control",
+      "dimensions": {
+        "network_profile": "loopback-quic",
+        "topology": "single-machine-loopback",
+        "transport": "quic"
+      },
+      "relative_mad": 0.32653061224489793
+    },
+    {
+      "case_id": "link.transport.shutdown",
+      "dimensions": {
+        "network_profile": "loopback-quic",
+        "topology": "single-machine-loopback",
+        "transport": "quic"
+      },
+      "relative_mad": 0.058823529411764705
+    },
+    {
+      "case_id": "link.transport.idle-control",
+      "dimensions": {
+        "network_profile": "loopback-quic",
+        "topology": "single-machine-loopback",
+        "transport": "quic"
+      },
+      "relative_mad": 0.37566137566137564
+    },
+    {
+      "case_id": "link.transport.control-only",
+      "dimensions": {
+        "network_profile": "loopback-quic",
+        "topology": "single-machine-loopback",
+        "transport": "quic"
+      },
+      "relative_mad": 0.19951716684006912
+    },
+    {
+      "case_id": "link.transport.throughput",
+      "dimensions": {
+        "network_profile": "loopback-quic",
+        "payload_bytes": 256,
+        "topology": "single-machine-loopback",
+        "transport": "quic"
+      },
+      "relative_mad": 0.13063497303874644
+    },
+    {
+      "case_id": "link.transport.throughput",
+      "dimensions": {
+        "network_profile": "loopback-quic",
+        "payload_bytes": 4096,
+        "topology": "single-machine-loopback",
+        "transport": "quic"
+      },
+      "relative_mad": 0.1231120421601173
+    },
+    {
+      "case_id": "link.transport.throughput",
+      "dimensions": {
+        "network_profile": "loopback-quic",
+        "payload_bytes": 65536,
+        "topology": "single-machine-loopback",
+        "transport": "quic"
+      },
+      "relative_mad": 0.09948710892321228
+    },
+    {
+      "case_id": "link.transport.connect",
+      "dimensions": {
+        "network_profile": "loopback-tcp",
+        "topology": "single-machine-loopback",
+        "transport": "tcp"
+      },
+      "relative_mad": 0.16981132075471697
+    },
+    {
+      "case_id": "link.transport.rtt",
+      "dimensions": {
+        "network_profile": "loopback-tcp",
+        "topology": "single-machine-loopback",
+        "transport": "tcp"
+      },
+      "relative_mad": 0.2920353982300885
+    },
+    {
+      "case_id": "link.transport.saturated-control",
+      "dimensions": {
+        "network_profile": "loopback-tcp",
+        "topology": "single-machine-loopback",
+        "transport": "tcp"
+      },
+      "relative_mad": 0.39166666666666666
+    },
+    {
+      "case_id": "link.transport.shutdown",
+      "dimensions": {
+        "network_profile": "loopback-tcp",
+        "topology": "single-machine-loopback",
+        "transport": "tcp"
+      },
+      "relative_mad": 0.25
+    },
+    {
+      "case_id": "link.transport.idle-control",
+      "dimensions": {
+        "network_profile": "loopback-tcp",
+        "topology": "single-machine-loopback",
+        "transport": "tcp"
+      },
+      "relative_mad": 0.32575757575757575
+    },
+    {
+      "case_id": "link.transport.throughput",
+      "dimensions": {
+        "network_profile": "loopback-tcp",
+        "payload_bytes": 256,
+        "topology": "single-machine-loopback",
+        "transport": "tcp"
+      },
+      "relative_mad": 0.14149908449576998
+    },
+    {
+      "case_id": "link.transport.throughput",
+      "dimensions": {
+        "network_profile": "loopback-tcp",
+        "payload_bytes": 4096,
+        "topology": "single-machine-loopback",
+        "transport": "tcp"
+      },
+      "relative_mad": 0.24605036011084924
+    },
+    {
+      "case_id": "link.transport.throughput",
+      "dimensions": {
+        "network_profile": "loopback-tcp",
+        "payload_bytes": 65536,
+        "topology": "single-machine-loopback",
+        "transport": "tcp"
+      },
+      "relative_mad": 0.6602797202529916
+    },
+    {
+      "case_id": "link.transport.throughput",
+      "dimensions": {
+        "network_profile": "loopback-tcp",
+        "payload_bytes": 1048576,
+        "topology": "single-machine-loopback",
+        "transport": "tcp"
+      },
+      "relative_mad": 0.3994037559206332
+    },
+    {
+      "case_id": "link.multiplex.data-flow",
+      "dimensions": {
+        "logical_flows": 1,
+        "payload_bytes": 256
+      },
+      "relative_mad": 0.21333333333333335
+    },
+    {
+      "case_id": "link.multiplex.data-flow",
+      "dimensions": {
+        "logical_flows": 16,
+        "payload_bytes": 256
+      },
+      "relative_mad": 0.05625
+    },
+    {
+      "case_id": "link.multiplex.data-flow",
+      "dimensions": {
+        "logical_flows": 56,
+        "payload_bytes": 256
+      },
+      "relative_mad": 0.1337719298245614
+    },
+    {
+      "case_id": "link.multiplex.data-flow",
+      "dimensions": {
+        "logical_flows": 56,
+        "payload_bytes": 4096
+      },
+      "relative_mad": 0.05063291139240506
+    },
+    {
+      "case_id": "link.multiplex.data-flow",
+      "dimensions": {
+        "logical_flows": 56,
+        "payload_bytes": 65536
+      },
+      "relative_mad": 0.14354066985645933
+    },
+    {
+      "case_id": "link.multiplex.data-flow",
+      "dimensions": {
+        "logical_flows": 56,
+        "payload_bytes": 1048576
+      },
+      "relative_mad": 0.16470588235294117
+    },
+    {
+      "case_id": "link.backpressure.saturated-control",
+      "dimensions": {
+        "boundary": "in-memory-bounded-state-machine"
+      },
+      "relative_mad": 0.13725490196078433
+    },
+    {
+      "case_id": "link.datagram.latest-only-backpressure",
+      "dimensions": {
+        "boundary": "in-memory-bounded-state-machine"
+      },
+      "relative_mad": 0.08962264150943396
+    },
+    {
+      "case_id": "link.reconnect.fault",
+      "dimensions": {
+        "boundary": "in-memory-bounded-state-machine"
+      },
+      "relative_mad": 0.15789473684210525
+    },
+    {
+      "case_id": "link.reconnect.policy",
+      "dimensions": {
+        "boundary": "in-memory-bounded-state-machine"
+      },
+      "relative_mad": 0.292658481583563
+    }
+  ],
+  "rule": "bounded-queue/correctness failures are framework suspects; relative MAD above 5% alone is environmental noise"
+}
