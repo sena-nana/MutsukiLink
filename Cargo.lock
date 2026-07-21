@@ -411,6 +411,7 @@ dependencies = [
  "mutsuki-link-core",
  "mutsuki-link-io",
  "mutsuki-link-transport-testkit",
+ "sha2",
  "tokio",
 ]
 

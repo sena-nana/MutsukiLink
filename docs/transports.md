@@ -12,6 +12,11 @@ process, user, and group credentials when the platform provides them. These valu
 inputs, not an authentication decision; the identity owner must account for PID reuse and platform
 semantics.
 
+Stable desktop App endpoints derive their local address and `EndpointId` from `AppId` plus the
+current user/session identity via `local_address_for_app` / `endpoint_id_for_app`. Business code must
+not concatenate pipe or socket paths. Optional `EndpointLease` files support single-owner takeover
+after abnormal exit; reclaim only happens when the recorded process is gone.
+
 Local transport does not change Host/plugin execution. A DistributedHost adapter exchanges opaque
 Link frames with a ServiceHost or other Host endpoint, while normal plugin invocation remains owned
 by that Host.

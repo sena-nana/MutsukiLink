@@ -19,6 +19,13 @@ use mutsuki_link_core::{
 use mutsuki_link_io::{ConnectionCounter, FramedConnection, spawn_framed_connection};
 use std::time::Instant;
 
+mod app_endpoint;
+
+pub use app_endpoint::{
+    AppEndpointDescriptor, AppEndpointError, AppId, CapabilityOffer, EndpointLease,
+    SessionIdentity, endpoint_id_for_app, local_address_for_app, reclaim_stale_lease,
+};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalAddress(pub String);
 

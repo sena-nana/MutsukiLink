@@ -11,6 +11,7 @@ description = "Opt-in cross-platform local IPC transport for MutsukiLink"
 interprocess.workspace = true
 mutsuki-link-core = { version = "0.1.0", path = "../mutsuki-link-core" }
 mutsuki-link-io = { version = "0.1.0", path = "../mutsuki-link-io" }
+sha2.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
