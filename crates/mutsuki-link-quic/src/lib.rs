@@ -830,6 +830,71 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_accepts_respect_connection_budget() {
+        let (server_config, client_config) = crypto_configs();
+        let options = QuicOptions {
+            budget: TransportBudget {
+                max_connections: 2,
+                idle_timeout: None,
+                ..TransportBudget::default()
+            },
+            enable_datagrams: false,
+            ..QuicOptions::default()
+        };
+        let listener = QuicListener::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            EndpointId::from_bytes([2; 16]),
+            server_config,
+            options,
+        )
+        .unwrap();
+        let address = listener.local_addr().unwrap();
+        let connector =
+            QuicConnector::new("127.0.0.1:0".parse().unwrap(), client_config, options).unwrap();
+        let context = ConnectContext::default();
+
+        let mut servers = Vec::new();
+        let mut clients = Vec::new();
+        for index in 0..2_u8 {
+            let accept = listener.accept(EndpointId::from_bytes([index; 16]));
+            let connect = connector.connect(
+                address,
+                "localhost",
+                EndpointId::from_bytes([index; 16]),
+                EndpointId::from_bytes([2; 16]),
+                &context,
+            );
+            let (server, client) = tokio::join!(accept, connect);
+            servers.push(server.unwrap());
+            clients.push(client.unwrap());
+        }
+        assert_eq!(listener.active_connections(), 2);
+        let rejected = listener
+            .accept(EndpointId::from_bytes([9; 16]))
+            .await
+            .unwrap_err();
+        assert_eq!(rejected.kind, TransportErrorKind::WouldBlock);
+
+        drop(servers.remove(0));
+        drop(clients.remove(0));
+        tokio::task::yield_now().await;
+        assert_eq!(listener.active_connections(), 1);
+
+        let accept = listener.accept(EndpointId::from_bytes([3; 16]));
+        let connect = connector.connect(
+            address,
+            "localhost",
+            EndpointId::from_bytes([3; 16]),
+            EndpointId::from_bytes([2; 16]),
+            &context,
+        );
+        let (server, client) = tokio::join!(accept, connect);
+        let _server = server.unwrap();
+        let _client = client.unwrap();
+        assert_eq!(listener.active_connections(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn quic_round_trip_datagram_and_quality_summary() {
         let (server_config, client_config) = crypto_configs();
         let options = QuicOptions {

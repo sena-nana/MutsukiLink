@@ -1,0 +1,21 @@
+[package]
+name = "mutsuki-link-runtime"
+description = "Optional multi-peer QUIC session pool for MutsukiLink"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mutsuki-link-core = { version = "0.1.0", path = "../mutsuki-link-core" }
+mutsuki-link-quic = { version = "0.1.0", path = "../mutsuki-link-quic" }
+quinn.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+rcgen.workspace = true
+rustls.workspace = true
+
+[lints]
+workspace = true

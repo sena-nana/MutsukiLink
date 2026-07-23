@@ -31,7 +31,14 @@ connection library” describes its role; `LinkSDK` is not a repository or publi
 - first-use pairing and long-term peer identity;
 - authenticated connection/session lifecycle;
 - reconnect, quality summary, bounded multiplexed channels;
-- generic transport and upper-protocol negotiation.
+- generic transport and upper-protocol negotiation;
+- optional multi-peer session orchestration (`mutsuki-link-runtime` / `PeerSessionPool`), without
+  interpreting application payloads.
+
+Multi-peer connection indexing is an opt-in runtime concern. `mutsuki-link-core` remains
+single-session and runtime-neutral; hosts that need one local endpoint to many remote peers enable
+the `runtime` feature and authenticate before `admit_inbound`. Details:
+[runtime pool](./runtime-pool.md).
 
 ## Upper-layer responsibilities
 
