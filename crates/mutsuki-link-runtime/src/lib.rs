@@ -23,5 +23,5 @@ pub use error::PoolError;
 pub use events::PoolEvent;
 pub use peer_session::PeerSessionHandle;
 pub use pool::{
-    inbound_awaiting_auth_event, peer_disconnected_event, InboundConnect, PeerSessionPool,
+    InboundConnect, PeerSessionPool, inbound_awaiting_auth_event, peer_disconnected_event,
 };

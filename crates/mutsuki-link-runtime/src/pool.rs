@@ -1,7 +1,7 @@
 use crate::config::{DuplicatePeerPolicy, LinkEndpointConfig};
 use crate::error::PoolError;
 use crate::events::PoolEvent;
-use crate::peer_session::{now_unix_ms, PeerSessionHandle};
+use crate::peer_session::{PeerSessionHandle, now_unix_ms};
 use mutsuki_link_core::{
     CloseReason, ConnectContext, Connection, ConnectionActivityProfile, ConnectionId, EndpointId,
     PeerId, ReconnectAction,
@@ -143,9 +143,9 @@ impl PeerSessionPool {
         peer_id: PeerId,
         remote_endpoint: EndpointId,
     ) -> Result<&mut PeerSessionHandle, PoolError> {
-        let connection = inbound
-            .take_connection()
-            .ok_or(PoolError::InvalidConfig("inbound connection already consumed"))?;
+        let connection = inbound.take_connection().ok_or(PoolError::InvalidConfig(
+            "inbound connection already consumed",
+        ))?;
         let remote_addr = inbound.remote_addr();
         self.insert_session(peer_id, remote_endpoint, remote_addr, connection)
     }

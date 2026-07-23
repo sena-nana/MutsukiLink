@@ -5,7 +5,7 @@ use mutsuki_link_core::{
 };
 use mutsuki_link_quic::QuicOptions;
 use mutsuki_link_runtime::{
-    DuplicatePeerPolicy, LinkEndpointConfig, PoolError, PoolEvent, PeerSessionPool,
+    DuplicatePeerPolicy, LinkEndpointConfig, PeerSessionPool, PoolError, PoolEvent,
 };
 use quinn::{ClientConfig, ServerConfig};
 use rustls::RootCertStore;
@@ -123,17 +123,16 @@ async fn dial_pair(
     )
     .unwrap();
     let accept = hub.accept_inbound(remote_endpoint);
-    let connect = client.connect_outbound(
-        peer(0x10),
-        address,
-        endpoint(0x10),
-        Some("localhost"),
-        None,
-    );
+    let connect =
+        client.connect_outbound(peer(0x10), address, endpoint(0x10), Some("localhost"), None);
     let (inbound, connected) = tokio::join!(accept, connect);
     connected.expect("outbound connect");
-    hub.admit_inbound(inbound.expect("inbound accept"), remote_peer, remote_endpoint)
-        .expect("admit inbound");
+    hub.admit_inbound(
+        inbound.expect("inbound accept"),
+        remote_peer,
+        remote_endpoint,
+    )
+    .expect("admit inbound");
     client
 }
 
@@ -331,13 +330,8 @@ async fn max_peers_limit_rejects_additional_admission() {
     )
     .unwrap();
     let accept = hub.accept_inbound(endpoint(2));
-    let connect = second.connect_outbound(
-        peer(0xAA),
-        address,
-        endpoint(0x10),
-        Some("localhost"),
-        None,
-    );
+    let connect =
+        second.connect_outbound(peer(0xAA), address, endpoint(0x10), Some("localhost"), None);
     let (inbound, connected) = tokio::join!(accept, connect);
     connected.unwrap();
     let error = hub
@@ -377,12 +371,7 @@ async fn per_peer_reconnect_and_heartbeat_are_independent() {
         .as_millis() as u64;
 
     let events = hub
-        .note_transport_failure(
-            &peer(1),
-            ReconnectFailure::TemporarilyUnreachable,
-            now,
-            0,
-        )
+        .note_transport_failure(&peer(1), ReconnectFailure::TemporarilyUnreachable, now, 0)
         .unwrap();
     assert!(matches!(
         events.as_slice(),
@@ -461,6 +450,11 @@ async fn concurrent_accept_and_connect_four_peers() {
     assert_eq!(hub.session_count(), 4);
     assert_eq!(clients.len(), 4);
     for peer_id in hub.active_peers() {
-        assert!(*peer_id == peer(1) || *peer_id == peer(2) || *peer_id == peer(3) || *peer_id == peer(4));
+        assert!(
+            *peer_id == peer(1)
+                || *peer_id == peer(2)
+                || *peer_id == peer(3)
+                || *peer_id == peer(4)
+        );
     }
 }
