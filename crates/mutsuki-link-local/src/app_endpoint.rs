@@ -311,11 +311,10 @@ fn process_exists(pid: u32) -> bool {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .output()
-            .map(|output| {
+            .is_ok_and(|output| {
                 let text = String::from_utf8_lossy(&output.stdout);
                 text.contains(&pid.to_string())
             })
-            .unwrap_or(false)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
