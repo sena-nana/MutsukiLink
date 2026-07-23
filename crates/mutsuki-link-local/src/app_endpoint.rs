@@ -141,11 +141,11 @@ pub fn local_address_for_app(app_id: &AppId, session: &SessionIdentity) -> Local
         session.user_key,
         session.session_key
     ));
-    let short = digest
-        .iter()
-        .take(8)
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let short = digest.iter().take(8).fold(String::new(), |mut out, byte| {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+        out
+    });
     let sanitized = app_id
         .as_str()
         .chars()
@@ -154,7 +154,7 @@ pub fn local_address_for_app(app_id: &AppId, session: &SessionIdentity) -> Local
     LocalAddress(format!("mutsuki.app.{sanitized}.{short}"))
 }
 
-/// Derive a stable EndpointId from AppId + session so owners do not invent paths.
+/// Derive a stable `EndpointId` from `AppId` + session so owners do not invent paths.
 pub fn endpoint_id_for_app(app_id: &AppId, session: &SessionIdentity) -> EndpointId {
     let digest = Sha256::digest(format!(
         "mutsuki.link.endpoint.v1\0{}\0{}\0{}",
@@ -282,7 +282,9 @@ fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 fn process_exists(pid: u32) -> bool {
@@ -300,8 +302,7 @@ fn process_exists(pid: u32) -> bool {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
+            .is_ok_and(|status| status.success())
     }
     #[cfg(windows)]
     {

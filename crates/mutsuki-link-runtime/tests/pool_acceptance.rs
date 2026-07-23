@@ -365,10 +365,13 @@ async fn per_peer_reconnect_and_heartbeat_are_independent() {
         std::mem::forget(client);
     }
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+    let now = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX);
 
     let events = hub
         .note_transport_failure(&peer(1), ReconnectFailure::TemporarilyUnreachable, now, 0)
