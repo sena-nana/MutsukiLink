@@ -8,6 +8,7 @@ members = [
     "crates/mutsuki-link-local",
     "crates/mutsuki-link-pairing",
     "crates/mutsuki-link-quic",
+    "crates/mutsuki-link-runtime",
     "crates/mutsuki-link-tcp",
     "crates/mutsuki-link-transport-testkit",
     "crates/ntp-mutsuki-link",

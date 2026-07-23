@@ -15,5 +15,7 @@ pub use mutsuki_link_local as local;
 pub use mutsuki_link_pairing as pairing;
 #[cfg(feature = "quic")]
 pub use mutsuki_link_quic as quic;
+#[cfg(feature = "runtime")]
+pub use mutsuki_link_runtime as runtime;
 #[cfg(feature = "tcp")]
 pub use mutsuki_link_tcp as tcp;

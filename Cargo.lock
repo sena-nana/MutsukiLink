@@ -370,6 +370,7 @@ dependencies = [
  "mutsuki-link-local",
  "mutsuki-link-pairing",
  "mutsuki-link-quic",
+ "mutsuki-link-runtime",
  "mutsuki-link-tcp",
  "quinn",
  "rcgen",
@@ -434,6 +435,18 @@ dependencies = [
  "mutsuki-link-core",
  "mutsuki-link-io",
  "mutsuki-link-transport-testkit",
+ "quinn",
+ "rcgen",
+ "rustls",
+ "tokio",
+]
+
+[[package]]
+name = "mutsuki-link-runtime"
+version = "0.1.0"
+dependencies = [
+ "mutsuki-link-core",
+ "mutsuki-link-quic",
  "quinn",
  "rcgen",
  "rustls",
